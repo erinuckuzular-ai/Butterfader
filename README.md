@@ -41,16 +41,36 @@ Latency is about 2.3 ms, reported to the host. The window scales from 60% to 200
 
 ## Install
 
-Download **Butterfader.dmg** from the [latest release](../../releases/latest). Every push to `main` builds one automatically. Open it and double-click **Install Butterfader.pkg**, then:
+Every push to `main` builds fresh installers on the [latest release](../../releases/latest) page.
 
-- **Premiere Pro:** Settings > Audio > Audio Plug-in Manager > Scan for Plug-ins
-- **Audition:** Effects > Audio Plug-in Manager > Scan for Plug-ins
+### Mac
 
-The installer isn't notarised. If macOS blocks it, right-click > Open.
+1. Download **Butterfader.dmg**.
+2. Open it and double-click **Install Butterfader.pkg**. The installer isn't notarised, so if macOS blocks it, right-click the .pkg and choose **Open**.
+3. Rescan plug-ins:
+   - **Premiere Pro:** Settings > Audio > Audio Plug-in Manager > Scan for Plug-ins
+   - **Audition:** Effects > Audio Plug-in Manager > Scan for Plug-ins
+
+Installs the VST3 and the Audio Unit. Works on Apple Silicon and Intel Macs, macOS 11 or later.
+
+### Windows
+
+1. Download **Butterfader-Setup.exe**.
+2. Run it. The installer isn't code-signed yet, so Windows SmartScreen may say it protected your PC. Click **More info**, then **Run anyway**. Approve the admin prompt, because the plug-in goes into a system folder.
+3. Rescan plug-ins:
+   - **Premiere Pro:** Edit > Preferences > Audio > Audio Plug-in Manager > Scan for Plug-ins, then make sure **Butterfader** is ticked
+   - **Audition:** Effects > Audio Plug-in Manager > Scan for Plug-ins
+4. Find it under Audio Effects in Premiere Pro, or in the Effects Rack in Audition.
+
+**Without the installer:** download **Butterfader-Windows-VST3.zip**, unzip it, and copy the `Butterfader.vst3` folder into `C:\Program Files\Common Files\VST3`. Then rescan as above.
+
+**Uninstall:** Settings > Apps > Installed apps > **Butterfader VST3** > Uninstall, or delete `C:\Program Files\Common Files\VST3\Butterfader.vst3`.
+
+Needs 64-bit Windows 10 or 11. Windows gets the VST3 only, because Audio Units are Mac-only.
 
 ## Build
 
-Requires Xcode and CMake. JUCE 8 is fetched automatically.
+Requires CMake, plus Xcode on Mac or Visual Studio 2022 on Windows. JUCE 8 is fetched automatically.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release

@@ -1,0 +1,18 @@
+BUTTERFADER FOR WINDOWS
+
+INSTALL
+  1. Run Butterfader-Setup.exe.
+     If Windows SmartScreen says it protected your PC: click "More info" > "Run anyway".
+     (The installer isn't code-signed yet.)
+  2. Premiere Pro: Preferences > Audio > Audio Plug-in Manager > Scan for Plug-ins.
+     Audition: Effects > Audio Plug-in Manager > Scan for Plug-ins.
+
+MANUAL INSTALL (no installer)
+  Copy the Butterfader.vst3 folder into:
+  C:\Program Files\Common Files\VST3
+
+UNINSTALL
+  Settings > Apps > Butterfader VST3 > Uninstall
+  (or delete C:\Program Files\Common Files\VST3\Butterfader.vst3)
+
+64-bit Windows 10 or 11.

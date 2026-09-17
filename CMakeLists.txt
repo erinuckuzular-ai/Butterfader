@@ -13,11 +13,18 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
 
+# Audio Units only exist on macOS; Windows gets VST3.
+if(APPLE)
+    set(BUTTERFADER_FORMATS AU VST3)
+else()
+    set(BUTTERFADER_FORMATS VST3)
+endif()
+
 juce_add_plugin(Butterfader
     COMPANY_NAME "Butterfader"
     PLUGIN_MANUFACTURER_CODE Bttr
     PLUGIN_CODE BtFd
-    FORMATS AU VST3
+    FORMATS ${BUTTERFADER_FORMATS}
     PRODUCT_NAME "Butterfader"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE

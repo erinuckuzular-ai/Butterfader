@@ -1,6 +1,7 @@
-name: Build & release DMG
+name: Build & release
 
-# Every push to main builds a universal DMG and publishes it as the latest GitHub release.
+# Every push to main builds a universal macOS DMG and a Windows installer,
+# then publishes both as the latest GitHub release.
 on:
   push:
     branches: [main]
@@ -14,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release:
+  macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -22,17 +23,75 @@ jobs:
       - name: Build DMG
         run: ./scripts/make-dmg.sh
 
+      - name: Stage
+        run: |
+          VERSION="$(sed -n 's/^project(Butterfader VERSION \([0-9.]*\)).*/\1/p' CMakeLists.txt)"
+          mkdir -p out
+          cp "dist/Butterfader-${VERSION}.dmg" out/Butterfader.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DBUTTERFADER_COPY_PLUGINS=OFF
+
+      - name: Build VST3 and tests
+        run: cmake --build build --config Release --target Butterfader_VST3 DSPTest --parallel
+
+      - name: Run DSP tests
+        run: .\build\DSPTest_artefacts\Release\DSPTest.exe
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(Butterfader VERSION ([0-9.]+)\)').Matches[0].Groups[1].Value
+          choco install innosetup -y --no-progress
+          New-Item -ItemType Directory -Force out | Out-Null
+          $src = (Resolve-Path build\Butterfader_artefacts\Release\VST3).Path
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DSourceDir=$src" "/DOutputDir=$((Resolve-Path out).Path)" packaging\windows\Butterfader.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force zipstage | Out-Null
+          Copy-Item -Recurse "$src\Butterfader.vst3" zipstage\
+          Copy-Item "packaging\windows\READ ME FIRST.txt" zipstage\
+          Compress-Archive -Path zipstage\* -DestinationPath out\Butterfader-Windows-VST3.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/
+
+  release:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="$(sed -n 's/^project(Butterfader VERSION \([0-9.]*\)).*/\1/p' CMakeLists.txt)"
           TAG="v${VERSION}-build${{ github.run_number }}"
-          cp "dist/Butterfader-${VERSION}.dmg" dist/Butterfader.dmg
-          gh release create "$TAG" "dist/Butterfader-${VERSION}.dmg" dist/Butterfader.dmg \
+          gh release create "$TAG" dist/Butterfader.dmg dist/Butterfader-Setup.exe dist/Butterfader-Windows-VST3.zip \
             --target "${{ github.sha }}" \
             --title "Butterfader ${VERSION} (build ${{ github.run_number }})" \
             --notes "Automatic build of $(git rev-parse --short HEAD): $(git log -1 --pretty=%s)
 
-          Download **Butterfader.dmg**, open it and double-click **Install Butterfader.pkg** (if macOS blocks it: right-click > Open). Then rescan plug-ins in your DAW." \
+          **Mac:** download **Butterfader.dmg**, open it and double-click **Install Butterfader.pkg** (if macOS blocks it: right-click > Open).
+
+          **Windows:** run **Butterfader-Setup.exe** (if SmartScreen appears: More info > Run anyway), or unzip **Butterfader-Windows-VST3.zip** into C:\\Program Files\\Common Files\\VST3.
+
+          Then rescan plug-ins in Premiere Pro or Audition." \
             --latest

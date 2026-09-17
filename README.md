@@ -6,7 +6,7 @@ A silky vocal chain for podcasts, in one plug-in: vocal rider, bleed rejection, 
 
 Get **Butterfader.dmg** from the [latest release](../../releases/latest). Every push to `main` builds a fresh DMG automatically.
 
-Open the DMG and double-click **Install Butterfader.pkg** (if macOS blocks it: right-click > Open). The installer puts:
+Open the DMG and double-click **Install Butterfader.pkg**. Everything is signed with a Developer ID and notarized, so nothing is blocked by Gatekeeper. The installer puts:
 
 - VST3 in `/Library/Audio/Plug-Ins/VST3`
 - AU in `/Library/Audio/Plug-Ins/Components`
@@ -56,3 +56,32 @@ auval -v aufx BtFd Arrw                            # validate AU
 ```
 
 Latency is 30 ms (25 ms rider lookahead + 5 ms limiter lookahead), reported to the host.
+
+### Signing and notarizing the release
+
+Releases are signed with a Developer ID and notarized, so macOS opens them without a warning.
+Without these variables `make-dmg.sh` still produces a working but ad-hoc signed build that
+users must right-click > Open. Store the notary credentials once (an App Store Connect API
+key avoids app-specific passwords):
+
+```bash
+xcrun notarytool store-credentials butterfader-notary \
+  --key ~/Downloads/AuthKey_KEYID.p8 --key-id KEYID --issuer ISSUER-UUID
+```
+
+Then build:
+
+```bash
+APP_SIGN_ID="Developer ID Application: Your Name (TEAMID)" \
+INSTALLER_SIGN_ID="Developer ID Installer: Your Name (TEAMID)" \
+NOTARY_PROFILE=butterfader-notary \
+./scripts/make-dmg.sh
+```
+
+The plug-ins, the standalone app, the .pkg and the DMG are all signed with the hardened
+runtime and a secure timestamp; Apple's notary service takes a few minutes per file, and the
+script waits and staples the tickets so everything validates offline. Check a build with
+`spctl -a -vvv -t install dist/Butterfader-<version>.dmg` (expect `source=Notarized Developer ID`).
+
+The standalone app carries `packaging/standalone.entitlements` (microphone access) — the
+plug-ins don't need it, because the host owns the input.

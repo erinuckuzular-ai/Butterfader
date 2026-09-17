@@ -38,6 +38,8 @@ juce_add_plugin(Butterfader
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Butterfader needs your microphone so the standalone app can level live vocals."
     COPY_PLUGIN_AFTER_BUILD ${BUTTERFADER_COPY_PLUGINS})
 
 target_sources(Butterfader PRIVATE ${BUTTERFADER_SOURCES})

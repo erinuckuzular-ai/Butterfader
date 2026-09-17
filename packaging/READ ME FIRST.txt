@@ -1,0 +1,19 @@
+BUTTERFADER — silky vocal rider for talky people.
+
+INSTALL
+  1. Double-click "Install Butterfader.pkg".
+     If macOS says it can't check it for malicious software:
+     right-click the .pkg > Open > Open.
+     (or System Settings > Privacy & Security > "Open Anyway")
+  2. Follow the installer. Click Customize to pick VST3 / AU / Standalone.
+  3. Rescan plug-ins in your DAW. Find "Butterfader" by "Arrow".
+
+INSTALLS TO
+  VST3        /Library/Audio/Plug-Ins/VST3/Butterfader.vst3
+  AU          /Library/Audio/Plug-Ins/Components/Butterfader.component
+  Standalone  /Applications/Butterfader.app
+
+UNINSTALL
+  Delete those three files.
+
+Works on Apple Silicon and Intel Macs, macOS 11+.

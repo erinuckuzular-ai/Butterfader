@@ -1,0 +1,18 @@
+BUTTERFADER
+
+INSTALL
+  1. Double-click "Install Butterfader.pkg".
+     If macOS says it can't check it for malicious software:
+     right-click the .pkg > Open > Open
+     (or System Settings > Privacy & Security > "Open Anyway").
+  2. Premiere Pro: Settings > Audio > Audio Plug-in Manager > Scan for Plug-ins.
+     Audition: Effects > Audio Plug-in Manager > Scan for Plug-ins.
+
+INSTALLS TO
+  VST3  /Library/Audio/Plug-Ins/VST3/Butterfader.vst3
+  AU    /Library/Audio/Plug-Ins/Components/Butterfader.component
+
+UNINSTALL
+  Delete those two files.
+
+Apple Silicon and Intel Macs, macOS 11+.

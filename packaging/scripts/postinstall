@@ -1,0 +1,6 @@
+#!/bin/bash
+# Make Logic / GarageBand notice the new Audio Unit and clear any download quarantine flags.
+xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/Butterfader.component" 2>/dev/null || true
+xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Butterfader.vst3" 2>/dev/null || true
+killall -9 AudioComponentRegistrar 2>/dev/null || true
+exit 0

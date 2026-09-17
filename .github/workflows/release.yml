@@ -54,10 +54,12 @@ jobs:
           rm -f "$RUNNER_TEMP/notary.p8"
           echo "NOTARY_PROFILE=butterfader-notary" >> "$GITHUB_ENV"
 
+      # The identities only work once the certificates are in the runner's keychain,
+      # so they stay empty (an ad-hoc build) when the certificate secret is missing.
       - name: Build DMG
         env:
-          APP_SIGN_ID: ${{ secrets.APP_SIGN_ID }}
-          INSTALLER_SIGN_ID: ${{ secrets.INSTALLER_SIGN_ID }}
+          APP_SIGN_ID: ${{ env.MACOS_CERT_P12 != '' && secrets.APP_SIGN_ID || '' }}
+          INSTALLER_SIGN_ID: ${{ env.MACOS_CERT_P12 != '' && secrets.INSTALLER_SIGN_ID || '' }}
         run: ./scripts/make-dmg.sh
 
       - name: Publish release

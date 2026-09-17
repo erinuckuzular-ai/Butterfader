@@ -85,6 +85,35 @@ cmake --build build --target UISnapshot && ./build/UISnapshot_artefacts/Release/
 ./scripts/make-dmg.sh                                                                    # universal installer DMG
 ```
 
+### Signing and notarizing the macOS release
+
+With these variables `make-dmg.sh` signs with a Developer ID and notarizes, so macOS opens
+the release without a warning; without them it produces a working but ad-hoc signed build
+that users must right-click > Open. Store the notary credentials once (an App Store Connect
+API key avoids app-specific passwords):
+
+```bash
+xcrun notarytool store-credentials butterfader-notary \
+  --key ~/Downloads/AuthKey_KEYID.p8 --key-id KEYID --issuer ISSUER-UUID
+```
+
+Then build:
+
+```bash
+APP_SIGN_ID="Developer ID Application: Your Name (TEAMID)" \
+INSTALLER_SIGN_ID="Developer ID Installer: Your Name (TEAMID)" \
+NOTARY_PROFILE=butterfader-notary \
+./scripts/make-dmg.sh
+```
+
+The plug-ins, the .pkg and the DMG are signed with the hardened runtime and a secure
+timestamp; Apple's notary service takes a few minutes per file, and the script waits and
+staples the tickets so everything validates offline. Check a build with
+`spctl -a -vvv -t install dist/Butterfader-<version>.dmg` (expect `source=Notarized Developer ID`).
+
+The release workflow does the same when the repository has `MACOS_CERT_P12`,
+`MACOS_CERT_PASSWORD`, `NOTARY_KEY`, `NOTARY_KEY_ID` and `NOTARY_ISSUER` secrets.
+
 Source layout: `Source/DSP/Loudness.h` (BS.1770 meter), `Source/DSP/TruePeakLimiter.h`, `Source/DSP/Rider.h`, `Source/DSP/MicLink.h` (debleed link + noise floor), `Source/Platforms.h` (targets), `Source/UI/`.
 
 ## License

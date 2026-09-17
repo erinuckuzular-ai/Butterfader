@@ -17,10 +17,48 @@ concurrency:
 jobs:
   macos:
     runs-on: macos-14
+    env:
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
     steps:
       - uses: actions/checkout@v4
 
+      # Signing is optional: without the secrets the DMG still builds, ad-hoc signed.
+      - name: Import signing certificates
+        if: env.MACOS_CERT_P12 != ''
+        env:
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/certs.p12"
+          security import "$RUNNER_TEMP/certs.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/certs.p12"
+
+      - name: Store notary credentials
+        if: env.NOTARY_KEY != ''
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: |
+          echo "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials butterfader-notary \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER"
+          rm -f "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_PROFILE=butterfader-notary" >> "$GITHUB_ENV"
+
+      # The identities only work once the certificates are in the runner's keychain,
+      # so they stay empty (an ad-hoc build) when the certificate secret is missing.
       - name: Build DMG
+        env:
+          APP_SIGN_ID: ${{ env.MACOS_CERT_P12 != '' && secrets.APP_SIGN_ID || '' }}
+          INSTALLER_SIGN_ID: ${{ env.MACOS_CERT_P12 != '' && secrets.INSTALLER_SIGN_ID || '' }}
         run: ./scripts/make-dmg.sh
 
       - name: Stage

@@ -7,26 +7,71 @@ namespace bf::ui
 {
 
 //==============================================================================
-// Row of pill buttons bound to a choice parameter.
-class SegmentedControl : public juce::Component
+// Text tabs for the Mic / Master switch; the active one is lit from below.
+class ModeTabs : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    SegmentedControl (juce::RangedAudioParameter& p, juce::StringArray opts, juce::String caption)
-        : param (p), options (std::move (opts)), title (std::move (caption)),
+    explicit ModeTabs (juce::RangedAudioParameter& p)
+        : attachment (p, [this] (float v) { selected = juce::roundToInt (v); repaint(); })
+    {
+        attachment.sendInitialUpdate();
+        setRepaintsOnMouseActivity (true);
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setTooltip ("Mic: put one on each voice. Master: put one on the Mix track.");
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const juce::StringArray names { "Mic", "Master" };
+        auto r = getLocalBounds().toFloat();
+        const float w = r.getWidth() / 2.0f;
+        for (int i = 0; i < 2; ++i)
+        {
+            auto cell = juce::Rectangle<float> (r.getX() + i * w, r.getY(), w, r.getHeight());
+            const bool on = i == selected;
+            const bool hover = ! on && isMouseOver() && cell.contains (getMouseXYRelative().toFloat());
+            g.setFont (font (15.0f, on ? "Semibold" : "Regular"));
+            g.setColour (on ? colours::text : hover ? colours::textDim.brighter (0.3f) : colours::textDim);
+            g.drawText (names[i], cell, juce::Justification::centred);
+            if (on)
+            {
+                auto bar = cell.withSizeKeepingCentre (22.0f, 2.0f).withY (cell.getBottom() - 6.0f);
+                juce::DropShadow (colours::butter.withAlpha (0.8f), 6, {}).drawForRectangle (g, bar.toNearestInt());
+                g.setColour (colours::butter);
+                g.fillRoundedRectangle (bar, 1.0f);
+            }
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        attachment.setValueAsCompleteGesture (e.position.x < getWidth() * 0.5f ? 0.0f : 1.0f);
+    }
+
+private:
+    juce::ParameterAttachment attachment;
+    int selected = 1;
+};
+
+//==============================================================================
+// Recessed channel with a raised key on the selected option.
+class KeySelector : public juce::Component
+{
+public:
+    KeySelector (juce::RangedAudioParameter& p, juce::StringArray opts, juce::String caption)
+        : options (std::move (opts)), title (std::move (caption)),
           attachment (p, [this] (float v) { selected = juce::roundToInt (v); repaint(); })
     {
         attachment.sendInitialUpdate();
         setRepaintsOnMouseActivity (true);
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
     }
-
-    std::function<juce::String (int)> tooltipFor;
 
     void paint (juce::Graphics& g) override
     {
-        drawCaption (g, title, getLocalBounds().removeFromTop (16).toFloat());
-        auto r = track();
-        g.setColour (colours::groove);
-        g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
+        drawLabel (g, title, getLocalBounds().toFloat().removeFromTop (18.0f));
+        auto r = channel();
+        drawRecessed (g, r, 9.0f);
 
         const float w = r.getWidth() / options.size();
         for (int i = 0; i < options.size(); ++i)
@@ -34,34 +79,29 @@ public:
             auto cell = juce::Rectangle<float> (r.getX() + i * w, r.getY(), w, r.getHeight()).reduced (3.0f);
             const bool on = i == selected;
             const bool hover = ! on && isMouseOver() && cell.contains (getMouseXYRelative().toFloat());
+            if (on) drawRaised (g, cell, 7.0f, colours::key, true);
+            g.setFont (font (13.5f, on ? "Semibold" : "Regular"));
+            g.setColour (on ? colours::text : hover ? colours::text.withAlpha (0.8f) : colours::textDim);
+            g.drawText (options[i], cell.withTrimmedBottom (2.0f), juce::Justification::centred);
             if (on)
             {
+                auto led = juce::Rectangle<float> (cell.getCentreX() - 7.0f, cell.getBottom() - 5.0f, 14.0f, 2.0f);
                 g.setColour (colours::butter);
-                g.fillRoundedRectangle (cell, cell.getHeight() * 0.5f);
+                g.fillRoundedRectangle (led, 1.0f);
             }
-            else if (hover)
-            {
-                g.setColour (colours::panelRaised);
-                g.fillRoundedRectangle (cell, cell.getHeight() * 0.5f);
-            }
-            g.setColour (on ? colours::background : hover ? colours::text : colours::textDim);
-            g.setFont (font (13.0f, true));
-            g.drawText (options[i], cell, juce::Justification::centred);
         }
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
-        auto r = track();
+        auto r = channel();
         if (! r.contains (e.position)) return;
-        const int i = juce::jlimit (0, options.size() - 1, (int) ((e.position.x - r.getX()) / (r.getWidth() / options.size())));
-        attachment.setValueAsCompleteGesture ((float) i);
+        attachment.setValueAsCompleteGesture ((float) juce::jlimit (0, options.size() - 1, (int) ((e.position.x - r.getX()) / (r.getWidth() / options.size()))));
     }
 
 private:
-    juce::Rectangle<float> track() const { return getLocalBounds().toFloat().withTrimmedTop (20.0f).withHeight (34.0f); }
+    juce::Rectangle<float> channel() const { return getLocalBounds().toFloat().withTrimmedTop (22.0f).withHeight (38.0f); }
 
-    juce::RangedAudioParameter& param;
     juce::StringArray options;
     juce::String title;
     juce::ParameterAttachment attachment;
@@ -69,50 +109,56 @@ private:
 };
 
 //==============================================================================
-class AutoSwitch : public juce::Component, public juce::SettableTooltipClient
+class LedToggle : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    AutoSwitch (juce::RangedAudioParameter& p, juce::String onLabel, juce::String offLabel)
-        : attachment (p, [this] (float v) { on = v > 0.5f; repaint(); }),
-          onText (std::move (onLabel)), offText (std::move (offLabel))
+    LedToggle (juce::RangedAudioParameter& p, juce::String labelText, juce::Colour ledColour)
+        : attachment (p, [this] (float v) { on = v > 0.5f; repaint(); }), label (std::move (labelText)), colour (ledColour)
     {
         attachment.sendInitialUpdate();
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
-        setTitle (onText);
+        setRepaintsOnMouseActivity (true);
     }
 
     void paint (juce::Graphics& g) override
     {
         auto r = getLocalBounds().toFloat();
-        auto pill = r.removeFromLeft (44.0f).withSizeKeepingCentre (44.0f, 24.0f);
-        g.setColour (on ? colours::butter : colours::groove);
-        g.fillRoundedRectangle (pill, 12.0f);
-        const float knobX = on ? pill.getRight() - 21.0f : pill.getX() + 3.0f;
-        g.setColour (on ? colours::background : colours::textDim);
-        g.fillEllipse (knobX, pill.getY() + 3.0f, 18.0f, 18.0f);
+        auto well = r.removeFromLeft (18.0f).withSizeKeepingCentre (14.0f, 14.0f);
+        g.setColour (colours::groove);
+        g.fillEllipse (well);
+        auto led = well.reduced (3.0f);
+        if (on)
+        {
+            juce::DropShadow (colour.withAlpha (0.9f), 10, {}).drawForRectangle (g, led.toNearestInt());
+            g.setGradientFill (juce::ColourGradient (colour.brighter (0.5f), led.getCentreX(), led.getY(), colour, led.getCentreX(), led.getBottom(), false));
+        }
+        else
+            g.setColour (juce::Colour (0xff2b2822));
+        g.fillEllipse (led);
 
-        g.setColour (on ? colours::text : colours::textDim);
-        g.setFont (font (13.0f, true));
-        g.drawText (on ? onText : offText, r.withTrimmedLeft (8.0f), juce::Justification::centredLeft);
+        g.setFont (font (13.5f, on ? "Medium" : "Regular"));
+        g.setColour (on ? colours::text : isMouseOver() ? colours::textDim.brighter (0.3f) : colours::textDim);
+        g.drawText (label, r.withTrimmedLeft (8.0f), juce::Justification::centredLeft);
     }
 
     void mouseDown (const juce::MouseEvent&) override { attachment.setValueAsCompleteGesture (on ? 0.0f : 1.0f); }
 
 private:
     juce::ParameterAttachment attachment;
-    juce::String onText, offText;
+    juce::String label;
+    juce::Colour colour;
     bool on = true;
 };
 
 //==============================================================================
-// The "rider": a fader whose butter cap moves by itself in auto mode, draggable in manual mode.
+// Horizontal rider fader: the cap rides by itself in Auto, and is draggable in Manual.
 class RiderFader : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     static constexpr float minDb = -24.0f, maxDb = 36.0f;
 
-    RiderFader (juce::RangedAudioParameter& gainParam)
-        : param (gainParam), attachment (gainParam, [this] (float v) { manualDb = v; repaint(); })
+    explicit RiderFader (juce::RangedAudioParameter& gainParam)
+        : attachment (gainParam, [this] (float v) { manualDb = v; repaint(); })
     {
         attachment.sendInitialUpdate();
     }
@@ -122,9 +168,9 @@ public:
         if (std::abs (db - liveDb) > 0.02f || autoMode != isAuto || active != riding || learning != isLearning)
         {
             liveDb = db; isAuto = autoMode; riding = active; isLearning = learning;
-            setMouseCursor (isAuto ? juce::MouseCursor::NormalCursor : juce::MouseCursor::UpDownResizeCursor);
-            setTooltip (isAuto ? "Auto gain: Butterfader rides your level toward the target. Switch to Manual to set it yourself."
-                               : "Drag to set input gain. Double-click for 0 dB.");
+            setMouseCursor (isAuto ? juce::MouseCursor::NormalCursor : juce::MouseCursor::LeftRightResizeCursor);
+            setTooltip (isAuto ? "Auto: Butterfader rides the level toward the target. Turn Auto off to set it yourself."
+                               : "Drag to set the gain. Double-click for 0 dB.");
             repaint();
         }
     }
@@ -132,336 +178,108 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto r = getLocalBounds().toFloat();
-        const auto trackArea = slot();
+        const float value = isAuto ? liveDb : manualDb;
 
-        // scale
-        g.setFont (font (10.0f, true));
-        for (float db : { 36.0f, 24.0f, 12.0f, 0.0f, -12.0f, -24.0f })
+        // readout
+        auto head = r.removeFromTop (48.0f);
+        drawLabel (g, "Rider", head.removeFromTop (18.0f));
+        const auto valueText = minusSign ((value >= 0.0f ? "+" : "") + juce::String (value, 1));
+        const auto valueFont = font (30.0f, "Light");
+        g.setColour (colours::text);
+        g.setFont (valueFont);
+        g.drawText (valueText, head, juce::Justification::centredLeft);
+        const float vw = valueFont.getStringWidthFloat (valueText);
+        g.setFont (font (12.5f));
+        g.setColour (isAuto ? (isLearning ? colours::butter : riding ? colours::green : colours::textDim) : colours::textDim);
+        const juce::String status = ! isAuto ? "dB, manual" : isLearning ? "dB, listening" : riding ? "dB, riding" : "dB, holding";
+        g.drawText (status, head.withTrimmedLeft (vw + 8.0f).withTrimmedTop (6.0f), juce::Justification::centredLeft);
+
+        // track
+        const auto t = track();
+        drawRecessed (g, t, t.getHeight() * 0.5f);
+        const float x0 = xFor (0.0f), xv = xFor (value);
+        auto fill = juce::Rectangle<float>::leftTopRightBottom (juce::jmin (x0, xv), t.getY() + 2.0f, juce::jmax (x0, xv), t.getBottom() - 2.0f);
+        g.setColour (colours::butter.withAlpha (isAuto && ! riding ? 0.45f : 1.0f));
+        g.fillRoundedRectangle (fill, 2.0f);
+
+        g.setFont (font (10.5f));
+        for (float db : { -24.0f, 0.0f, 12.0f, 24.0f, 36.0f })
         {
-            const float y = yFor (db);
+            const float x = xFor (db);
             g.setColour (db == 0.0f ? colours::textDim : colours::textFaint);
-            g.drawText (juce::String (db > 0 ? "+" : "") + juce::String ((int) db), juce::Rectangle<float> (r.getX(), y - 7.0f, 26.0f, 14.0f),
-                        juce::Justification::centredRight);
-            g.fillRect (trackArea.getX() - 8.0f, y - 0.5f, 5.0f, 1.0f);
+            g.fillRect (x - 0.5f, t.getBottom() + 6.0f, 1.0f, 4.0f);
+            g.drawText (minusSign ((db > 0 ? "+" : "") + juce::String ((int) db)), juce::Rectangle<float> (x - 16.0f, t.getBottom() + 11.0f, 32.0f, 12.0f), juce::Justification::centred);
         }
 
-        g.setColour (colours::groove);
-        g.fillRoundedRectangle (trackArea, 3.0f);
-
-        const float value = isAuto ? liveDb : manualDb;
-        const float y0 = yFor (0.0f), yv = yFor (value);
-        g.setColour (colours::butter.withAlpha (isAuto && ! riding ? 0.35f : 0.8f));
-        g.fillRect (trackArea.getX(), juce::jmin (y0, yv), trackArea.getWidth(), std::abs (yv - y0));
-
-        // butter-pat cap
-        auto cap = juce::Rectangle<float> (trackArea.getCentreX() - 24.0f, yv - 13.0f, 48.0f, 26.0f);
-        g.setColour (juce::Colours::black.withAlpha (0.35f));
-        g.fillRoundedRectangle (cap.translated (0.0f, 3.0f), 7.0f);
-        g.setGradientFill (juce::ColourGradient (colours::butter.brighter (0.25f), cap.getX(), cap.getY(),
-                                                 colours::butterDeep, cap.getX(), cap.getBottom(), false));
-        g.fillRoundedRectangle (cap, 7.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.45f));
-        g.fillRoundedRectangle (cap.reduced (6.0f, 0.0f).withHeight (3.0f).translated (0.0f, 4.0f), 1.5f);
-        g.setColour (colours::background);
-        g.setFont (mono (12.0f));
-        g.drawText ((value >= 0.0f ? "+" : "") + juce::String (value, 1), cap.translated (0.0f, 1.0f), juce::Justification::centred);
-
-        // status
-        g.setFont (font (11.0f, true));
-        g.setColour (isAuto ? (isLearning ? colours::butter : riding ? colours::green : colours::textDim) : colours::textDim);
-        const juce::String status = ! isAuto ? "manual gain" : isLearning ? "listening..." : riding ? "riding" : "holding";
-        g.drawText (status, r.removeFromBottom (16.0f), juce::Justification::centred);
+        // cap
+        auto cap = juce::Rectangle<float> (xv - 10.0f, t.getCentreY() - 16.0f, 20.0f, 32.0f);
+        juce::DropShadow (juce::Colours::black.withAlpha (0.8f), 10, { 0, 4 }).drawForRectangle (g, cap.toNearestInt());
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbf5e6), cap.getX(), cap.getY(), juce::Colour (0xffb9b09c), cap.getX(), cap.getBottom(), false));
+        g.fillRoundedRectangle (cap, 4.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.3f));
+        for (int i : { -1, 1 })
+            g.fillRect (cap.getX() + 5.0f, cap.getCentreY() + i * 6.0f - 0.5f, cap.getWidth() - 10.0f, 1.0f);
+        g.setColour (colours::butterDeep);
+        g.fillRect (cap.getX() + 4.0f, cap.getCentreY() - 1.0f, cap.getWidth() - 8.0f, 2.0f);
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
         if (isAuto) return;
-        dragStartDb = manualDb;
-        dragStartY = e.position.y;
+        dragStartDb = manualDb; dragStartX = e.position.x;
         attachment.beginGesture();
     }
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
         if (isAuto) return;
-        const float dbPerPixel = (maxDb - minDb) / slot().getHeight() * (e.mods.isShiftDown() ? 0.2f : 1.0f);
-        const float db = juce::jlimit (-24.0f, 30.0f, dragStartDb - (e.position.y - dragStartY) * dbPerPixel);
-        attachment.setValueAsPartOfGesture (std::round (db * 10.0f) / 10.0f);
+        const float dbPerPixel = (maxDb - minDb) / track().getWidth() * (e.mods.isShiftDown() ? 0.2f : 1.0f);
+        attachment.setValueAsPartOfGesture (std::round (juce::jlimit (-24.0f, 30.0f, dragStartDb + (e.position.x - dragStartX) * dbPerPixel) * 10.0f) / 10.0f);
     }
 
-    void mouseUp (const juce::MouseEvent&) override       { if (! isAuto) attachment.endGesture(); }
+    void mouseUp (const juce::MouseEvent&) override          { if (! isAuto) attachment.endGesture(); }
     void mouseDoubleClick (const juce::MouseEvent&) override { if (! isAuto) attachment.setValueAsCompleteGesture (0.0f); }
 
 private:
-    juce::Rectangle<float> slot() const
-    {
-        auto r = getLocalBounds().toFloat().reduced (0.0f, 16.0f).withTrimmedBottom (14.0f);
-        return juce::Rectangle<float> (r.getX() + 52.0f, r.getY(), 6.0f, r.getHeight());
-    }
+    juce::Rectangle<float> track() const { return getLocalBounds().toFloat().withTrimmedTop (70.0f).withHeight (8.0f).reduced (10.0f, 0.0f); }
+    float xFor (float db) const { const auto t = track(); return juce::jmap (db, minDb, maxDb, t.getX(), t.getRight()); }
 
-    float yFor (float db) const
-    {
-        const auto s = slot();
-        return juce::jmap (db, maxDb, minDb, s.getY(), s.getBottom());
-    }
-
-    juce::RangedAudioParameter& param;
     juce::ParameterAttachment attachment;
-    float manualDb = 0.0f, liveDb = 0.0f, dragStartDb = 0.0f, dragStartY = 0.0f;
+    float manualDb = 0.0f, liveDb = 0.0f, dragStartDb = 0.0f, dragStartX = 0.0f;
     bool isAuto = true, riding = false, isLearning = true;
 };
 
 //==============================================================================
-// Vertical loudness meter: short-term fill coloured against the target, momentary tick, target band.
-class LoudnessBar : public juce::Component
+class CompareKey : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    static constexpr float top = 0.0f, bottom = -40.0f;
-
-    void setValues (float shortTermLufs, float momentaryLufs, float targetLufs)
+    explicit CompareKey (juce::RangedAudioParameter& p)
+        : attachment (p, [this] (float v) { on = v > 0.5f; repaint(); })
     {
-        const float st = juce::jmax (bottom - 1.0f, shortTermLufs), m = juce::jmax (bottom - 1.0f, momentaryLufs);
-        if (std::abs (st - shortTerm) > 0.01f || std::abs (m - momentary) > 0.01f || targetLufs != target)
-        {
-            shortTerm = st; momentary = m; target = targetLufs;
-            repaint();
-        }
+        attachment.sendInitialUpdate();
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setRepaintsOnMouseActivity (true);
+        setTooltip ("Hear the original at the same loudness, so you judge the processing and not the volume.");
     }
 
     void paint (juce::Graphics& g) override
     {
-        auto r = getLocalBounds().toFloat();
-        drawCaption (g, "Loudness", r.removeFromTop (16.0f), juce::Justification::centred);
-        r.removeFromTop (12.0f);
-        r.removeFromBottom (8.0f);
-        auto scaleArea = r.removeFromLeft (30.0f);
-        r.removeFromLeft (10.0f);
-        auto bar = r.removeFromLeft (26.0f);
-
-        g.setColour (colours::groove);
-        g.fillRoundedRectangle (bar, 6.0f);
-
-        auto yFor = [&] (float l) { return juce::jmap (juce::jlimit (bottom, top, l), top, bottom, bar.getY(), bar.getBottom()); };
-
-        // zones beside the bar
-        auto zone = [&] (float from, float to, juce::Colour c)
-        {
-            g.setColour (c.withAlpha (0.55f));
-            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (bar.getRight() + 4.0f, yFor (to), bar.getRight() + 7.0f, yFor (from)));
-        };
-        zone (target - 2.0f, target + 1.0f, colours::green);
-        zone (target + 1.0f, target + 3.0f, colours::amber);
-        zone (target + 3.0f, top, colours::red);
-        zone (bottom, target - 2.0f, colours::under.withAlpha (0.5f));
-
-        // fill
-        if (shortTerm > bottom)
-        {
-            const auto colour = loudnessColour (shortTerm, target);
-            auto fill = bar.withTop (yFor (shortTerm));
-            g.setGradientFill (juce::ColourGradient (colour, fill.getX(), fill.getY(), colour.withAlpha (0.35f), fill.getX(), bar.getBottom(), false));
-            g.fillRoundedRectangle (fill, 6.0f);
-        }
-
-        // momentary tick
-        if (momentary > bottom)
-        {
-            g.setColour (colours::text.withAlpha (0.8f));
-            g.fillRect (bar.getX() + 3.0f, yFor (momentary) - 1.0f, bar.getWidth() - 6.0f, 2.0f);
-        }
-
-        // target marker
-        const float ty = yFor (target);
-        juce::Path arrow;
-        arrow.addTriangle (bar.getX() - 7.0f, ty - 5.0f, bar.getX() - 7.0f, ty + 5.0f, bar.getX() - 1.0f, ty);
-        g.setColour (colours::butter);
-        g.fillPath (arrow);
-        g.fillRect (bar.getX(), ty - 0.75f, bar.getWidth(), 1.5f);
-
-        g.setFont (font (10.0f, true));
-        for (float l = top; l >= bottom; l -= 10.0f)
-        {
-            g.setColour (colours::textFaint);
-            g.drawText (juce::String ((int) l), scaleArea.withY (yFor (l) - 7.0f).withHeight (14.0f).withTrimmedRight (2.0f), juce::Justification::centredRight);
-        }
+        auto r = getLocalBounds().toFloat().reduced (2.0f, 4.0f);
+        drawRaised (g, r, 8.0f, on ? colours::under.darker (0.2f) : colours::key, isMouseOver());
+        auto led = juce::Rectangle<float> (r.getX() + 13.0f, r.getCentreY() - 3.5f, 7.0f, 7.0f);
+        if (on) juce::DropShadow (juce::Colour (0xffd9ecff), 8, {}).drawForRectangle (g, led.toNearestInt());
+        g.setColour (on ? juce::Colour (0xffd9ecff) : juce::Colour (0xff3a362e));
+        g.fillEllipse (led);
+        g.setColour (on ? colours::background : colours::text);
+        g.setFont (font (13.5f, "Semibold"));
+        g.drawText (on ? "Hearing original" : "A/B original", r.withTrimmedLeft (28.0f), juce::Justification::centredLeft);
     }
+
+    void mouseDown (const juce::MouseEvent&) override { attachment.setValueAsCompleteGesture (on ? 0.0f : 1.0f); }
 
 private:
-    float shortTerm = -120.0f, momentary = -120.0f, target = -14.0f;
-};
-
-//==============================================================================
-class ReductionBar : public juce::Component
-{
-public:
-    static constexpr float range = 12.0f;
-
-    void setValue (float grDb)
-    {
-        const float v = juce::jlimit (-range, 0.0f, grDb);
-        held = v < held ? v : held + (v - held) * 0.12f;
-        if (std::abs (held - shown) > 0.01f) { shown = held; repaint(); }
-    }
-
-    float getHeld() const { return held; }
-
-    void paint (juce::Graphics& g) override
-    {
-        auto r = getLocalBounds().toFloat();
-        drawCaption (g, "Reduction", r.removeFromTop (16.0f), juce::Justification::centred);
-        r.removeFromTop (12.0f);
-        r.removeFromBottom (8.0f);
-        auto bar = r.withSizeKeepingCentre (22.0f, r.getHeight()).translated (-8.0f, 0.0f);
-        auto scaleArea = r.withLeft (bar.getRight() + 4.0f);
-
-        g.setColour (colours::groove);
-        g.fillRoundedRectangle (bar, 6.0f);
-        auto yFor = [&] (float db) { return juce::jmap (-db, 0.0f, range, bar.getY(), bar.getBottom()); };
-
-        if (shown < -0.05f)
-        {
-            auto fill = bar.withBottom (yFor (shown));
-            g.setGradientFill (juce::ColourGradient (colours::green, 0.0f, yFor (0.0f), colours::red, 0.0f, yFor (-8.0f), false));
-            g.fillRoundedRectangle (fill, 6.0f);
-        }
-
-        g.setFont (font (10.0f, true));
-        for (float db : { 0.0f, 3.0f, 6.0f, 9.0f, 12.0f })
-        {
-            g.setColour (db == 3.0f || db == 6.0f ? colours::textDim : colours::textFaint);
-            g.drawText (db == 0.0f ? "0" : "-" + juce::String ((int) db), scaleArea.withY (yFor (-db) - 7.0f).withHeight (14.0f).withTrimmedLeft (6.0f),
-                        juce::Justification::centredLeft);
-        }
-    }
-
-private:
-    float held = 0.0f, shown = 0.0f;
-};
-
-//==============================================================================
-// Scrolling picture of the last few seconds: level going in, level coming out, reduction from the top.
-class HistoryView : public juce::Component
-{
-public:
-    explicit HistoryView (ButterfaderAudioProcessor& p) : processor (p) {}
-
-    void setTarget (float t) { target = t; }
-
-    void paint (juce::Graphics& g) override
-    {
-        auto r = getLocalBounds().toFloat();
-        g.setColour (colours::groove);
-        g.fillRoundedRectangle (r, 10.0f);
-
-        g.saveState();
-        juce::Path clip;
-        clip.addRoundedRectangle (r, 10.0f);
-        g.reduceClipRegion (clip);
-
-        auto yFor = [&] (float db) { return juce::jmap (juce::jlimit (-48.0f, 0.0f, db), 0.0f, -48.0f, r.getY() + 6.0f, r.getBottom()); };
-
-        // grid
-        for (float db = -6.0f; db >= -42.0f; db -= 6.0f)
-        {
-            g.setColour (colours::edge.withAlpha (0.45f));
-            g.fillRect (r.getX(), yFor (db), r.getWidth(), 1.0f);
-        }
-
-        const int points = juce::jlimit (50, ButterfaderAudioProcessor::historySize - 1, (int) (r.getWidth() / 2.0f));
-        const float step = r.getWidth() / (float) (points - 1);
-        const int newest = processor.historyWrite.load();
-
-        juce::Path inPath, outPath, grPath, duckPath, stPath;
-        bool anyDuck = false;
-        inPath.startNewSubPath (r.getX(), r.getBottom());
-        outPath.startNewSubPath (r.getX(), r.getBottom());
-        grPath.startNewSubPath (r.getX(), r.getY());
-        duckPath.startNewSubPath (r.getX(), r.getY());
-        bool stStarted = false;
-
-        for (int i = 0; i < points; ++i)
-        {
-            const auto& h = processor.history[(size_t) ((newest - (points - 1 - i) + ButterfaderAudioProcessor::historySize) % ButterfaderAudioProcessor::historySize)];
-            const float x = r.getX() + i * step;
-            inPath.lineTo (x, yFor (h.inputDb));
-            outPath.lineTo (x, yFor (h.outputDb));
-            grPath.lineTo (x, r.getY() + juce::jlimit (0.0f, 1.0f, -h.grDb / 24.0f) * r.getHeight());
-            duckPath.lineTo (x, r.getY() + juce::jlimit (0.0f, 1.0f, -h.duckDb / 36.0f) * r.getHeight());
-            anyDuck = anyDuck || h.duckDb < -0.5f;
-            if (h.shortTerm > -48.0f)
-            {
-                if (! stStarted) { stPath.startNewSubPath (x, yFor (h.shortTerm)); stStarted = true; }
-                else stPath.lineTo (x, yFor (h.shortTerm));
-            }
-        }
-        inPath.lineTo (r.getRight(), r.getBottom());   inPath.closeSubPath();
-        outPath.lineTo (r.getRight(), r.getBottom());  outPath.closeSubPath();
-        grPath.lineTo (r.getRight(), r.getY());        grPath.closeSubPath();
-        duckPath.lineTo (r.getRight(), r.getY());      duckPath.closeSubPath();
-
-        g.setColour (colours::butter.withAlpha (0.16f));
-        g.fillPath (inPath);
-        g.setGradientFill (juce::ColourGradient (colours::butter.withAlpha (0.85f), 0.0f, r.getY(), colours::butterDeep.withAlpha (0.35f), 0.0f, r.getBottom(), false));
-        g.fillPath (outPath);
-        if (anyDuck)
-        {
-            g.setColour (colours::under.withAlpha (0.2f));
-            g.fillPath (duckPath);
-            g.setColour (colours::under.withAlpha (0.6f));
-            g.strokePath (duckPath, juce::PathStrokeType (1.0f));
-        }
-        g.setColour (colours::red.withAlpha (0.75f));
-        g.fillPath (grPath);
-
-        // target and loudness trace
-        const float ty = yFor (target);
-        g.setColour (colours::green.withAlpha (0.8f));
-        const float dashes[] = { 6.0f, 5.0f };
-        g.drawDashedLine ({ r.getX(), ty, r.getRight(), ty }, dashes, 2, 1.2f);
-        g.setFont (font (10.0f, true));
-        auto tag = juce::Rectangle<float> (r.getX() + 8.0f, ty - 18.0f, 52.0f, 15.0f);
-        g.setColour (colours::groove.withAlpha (0.8f));
-        g.fillRoundedRectangle (tag, 4.0f);
-        g.setColour (colours::green);
-        g.drawText ("TARGET", tag, juce::Justification::centred);
-
-        g.setFont (font (10.0f, true));
-        for (float db = -12.0f; db >= -42.0f; db -= 12.0f)
-        {
-            auto label = juce::Rectangle<float> (r.getRight() - 34.0f, yFor (db) - 8.0f, 28.0f, 16.0f);
-            g.setColour (colours::groove.withAlpha (0.75f));
-            g.fillRoundedRectangle (label, 4.0f);
-            g.setColour (colours::textDim);
-            g.drawText (juce::String ((int) db), label, juce::Justification::centred);
-        }
-
-        // legend
-        {
-            auto legend = juce::Rectangle<float> (r.getX() + 8.0f, r.getBottom() - 22.0f, 250.0f, 16.0f);
-            auto chip = [&] (juce::Colour c, const juce::String& text, float width)
-            {
-                auto item = legend.removeFromLeft (width);
-                g.setColour (c);
-                g.fillRoundedRectangle (item.removeFromLeft (8.0f).withSizeKeepingCentre (8.0f, 8.0f), 2.0f);
-                g.setColour (colours::textDim);
-                g.drawText (text, item.withTrimmedLeft (5.0f), juce::Justification::centredLeft);
-            };
-            g.setColour (colours::groove.withAlpha (0.75f));
-            g.fillRoundedRectangle (legend.withWidth (anyDuck ? 216.0f : 142.0f).expanded (4.0f, 1.0f), 4.0f);
-            chip (colours::red, "limiter", 62.0f);
-            chip (colours::text, "loudness", 74.0f);
-            if (anyDuck) chip (colours::under, "ducking", 70.0f);
-        }
-
-        g.setColour (colours::text.withAlpha (0.9f));
-        g.strokePath (stPath, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-        g.restoreState();
-    }
-
-private:
-    ButterfaderAudioProcessor& processor;
-    float target = -14.0f;
+    juce::ParameterAttachment attachment;
+    bool on = false;
 };
 
 //==============================================================================
@@ -477,23 +295,16 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        auto r = getLocalBounds().toFloat().reduced (0.5f);
+        auto r = getLocalBounds().toFloat();
         const bool clipped = clips > 0;
-        const auto colour = clipped ? colours::red : colours::green;
-
-        g.setColour (clipped ? colours::red.withAlpha (live ? 0.28f : 0.14f) : colours::panelRaised);
-        g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
-        g.setColour (colour.withAlpha (clipped ? 0.9f : 0.35f));
-        g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.0f);
-
-        auto dot = r.removeFromLeft (r.getHeight()).withSizeKeepingCentre (8.0f, 8.0f);
-        if (live) { g.setColour (colours::red.withAlpha (0.35f)); g.fillEllipse (dot.expanded (4.0f)); }
-        g.setColour (colour);
-        g.fillEllipse (dot);
-
-        g.setColour (clipped ? colours::text : colours::textDim);
-        g.setFont (font (12.0f, true));
-        g.drawText (clipped ? "Source clipped x" + juce::String (clips) : "Source clean", r.withTrimmedRight (10.0f), juce::Justification::centredLeft);
+        auto led = r.removeFromLeft (14.0f).withSizeKeepingCentre (8.0f, 8.0f);
+        if (clipped && live) juce::DropShadow (colours::red, 10, {}).drawForRectangle (g, led.toNearestInt());
+        g.setColour (clipped ? colours::red : colours::green.withAlpha (0.7f));
+        g.fillEllipse (led);
+        g.setFont (font (13.0f, clipped ? "Semibold" : "Regular"));
+        g.setColour (clipped ? colours::red : colours::textDim);
+        g.drawText (clipped ? "Source clipped " + juce::String (juce::CharPointer_UTF8 ("\xc3\x97")) + juce::String (clips) : "Source clean",
+                    r.withTrimmedLeft (6.0f), juce::Justification::centredLeft);
     }
 
     void mouseUp (const juce::MouseEvent&) override { if (clips > 0 && onReset) onReset(); }
@@ -504,87 +315,308 @@ private:
 };
 
 //==============================================================================
-class CompareButton : public juce::Component, public juce::SettableTooltipClient
+// The stage: the last few seconds of audio as a lit landscape, the big readout floating over it,
+// and tall meters on the right.
+class StageView : public juce::Component
 {
 public:
-    explicit CompareButton (juce::RangedAudioParameter& p)
-        : attachment (p, [this] (float v) { on = v > 0.5f; repaint(); })
+    struct Readout
     {
-        attachment.sendInitialUpdate();
-        setMouseCursor (juce::MouseCursor::PointingHandCursor);
-        setRepaintsOnMouseActivity (true);
-        setTooltip ("Hear the original at the same loudness, so you judge the processing and not the volume.");
+        float integrated = -120.0f, shortTerm = -120.0f, momentary = -120.0f, truePeak = -120.0f;
+        float target = -14.0f, ceiling = -1.0f, grHeld = 0.0f, duck = 0.0f;
+        juce::String status;
+        juce::Colour statusColour;
+    };
+
+    explicit StageView (ButterfaderAudioProcessor& p) : processor (p)
+    {
+        addAndMakeVisible (clipBadge);
+        clipBadge.setTooltip ("Watches the audio coming in. If the recording already clipped, no limiter can undo it. Click to clear.");
+    }
+
+    ClipBadge clipBadge;
+    std::function<void()> onReset;
+
+    void setReadout (const Readout& r) { readout = r; repaint(); }
+
+    void resized() override
+    {
+        auto f = footerArea();
+        clipBadge.setBounds (juce::Rectangle<float> (f.getX() + 24.0f, f.getY() + 6.0f, 200.0f, 22.0f).toNearestInt());
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (resetArea().contains (e.position) && onReset) onReset();
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        setMouseCursor (resetArea().contains (e.position) ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
     }
 
     void paint (juce::Graphics& g) override
     {
-        auto r = getLocalBounds().toFloat().reduced (0.5f);
-        g.setColour (on ? colours::under : isMouseOver() ? colours::panelRaised.brighter (0.06f) : colours::panelRaised);
-        g.fillRoundedRectangle (r, 10.0f);
-        g.setColour (on ? colours::under : colours::edge.brighter (0.2f));
-        g.drawRoundedRectangle (r, 10.0f, 1.2f);
+        const auto area = getLocalBounds().toFloat();
+        g.setColour (colours::stage);
+        g.fillRect (area);
 
-        auto badge = r.removeFromLeft (54.0f).withSizeKeepingCentre (38.0f, 24.0f);
-        g.setColour (on ? colours::background.withAlpha (0.25f) : colours::groove);
-        g.fillRoundedRectangle (badge, 6.0f);
-        g.setFont (font (13.0f, true));
-        g.setColour (on ? colours::background : colours::butter);
-        g.drawText ("A/B", badge, juce::Justification::centred);
+        paintGraph (g, graphArea());
+        paintOverlay (g, graphArea());
+        paintFooter (g, footerArea());
+        paintMeters (g, meterArea());
 
-        g.setColour (on ? colours::background : colours::text);
-        g.setFont (font (14.0f, true));
-        g.drawText (on ? "Hearing original" : "Compare", r.removeFromTop (r.getHeight() * 0.54f), juce::Justification::bottomLeft);
-        g.setColour (on ? colours::background.withAlpha (0.75f) : colours::textDim);
-        g.setFont (font (11.5f));
-        g.drawText (on ? "level matched, click to exit" : "original, level matched", r.withTrimmedTop (1.0f), juce::Justification::topLeft, true);
+        // edge shading makes the stage read as a window sunk into the faceplate
+        g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.75f), 0.0f, 0.0f, juce::Colours::transparentBlack, 0.0f, 16.0f, false));
+        g.fillRect (area.withHeight (16.0f));
+        g.setColour (juce::Colours::white.withAlpha (0.07f));
+        g.fillRect (area.withTop (area.getBottom() - 1.0f));
     }
-
-    void mouseDown (const juce::MouseEvent&) override { attachment.setValueAsCompleteGesture (on ? 0.0f : 1.0f); }
 
 private:
-    juce::ParameterAttachment attachment;
-    bool on = false;
-};
+    static constexpr float meterWidth = 118.0f;
+    juce::Rectangle<float> meterArea() const { return getLocalBounds().toFloat().removeFromRight (meterWidth); }
+    static constexpr float footerHeight = 34.0f;
+    juce::Rectangle<float> graphArea() const { return getLocalBounds().toFloat().withTrimmedRight (meterWidth).withTrimmedBottom (footerHeight); }
+    juce::Rectangle<float> footerArea() const { return getLocalBounds().toFloat().withTrimmedRight (meterWidth).removeFromBottom (footerHeight); }
+    juce::Rectangle<float> resetArea() const { auto f = footerArea(); return { f.getRight() - 74.0f, f.getY() + 6.0f, 50.0f, 22.0f }; }
 
-//==============================================================================
-// Pat of butter. It melts when the limiter is working hard.
-class ButterLogo : public juce::Component
-{
-public:
-    void setMelt (float amount)
+    static float yFor (juce::Rectangle<float> r, float db)
     {
-        amount = juce::jlimit (0.0f, 1.0f, amount);
-        if (std::abs (amount - melt) > 0.01f) { melt = amount; repaint(); }
+        return juce::jmap (juce::jlimit (-48.0f, 0.0f, db), 0.0f, -48.0f, r.getY() + 24.0f, r.getBottom() - 6.0f);
     }
 
-    void paint (juce::Graphics& g) override
+    static juce::Path strokeOf (const juce::Path& p, float width)
     {
-        auto r = getLocalBounds().toFloat();
-        auto plate = r.removeFromBottom (8.0f).withSizeKeepingCentre (r.getWidth(), 6.0f);
-        g.setColour (colours::edge.brighter (0.4f));
-        g.fillEllipse (plate);
+        juce::Path out;
+        juce::PathStrokeType (width).createStrokedPath (out, p);
+        return out;
+    }
 
-        auto pat = r.withSizeKeepingCentre (r.getWidth() * 0.78f, r.getHeight() * 0.62f).withBottom (plate.getCentreY() + 1.0f);
-        const float sag = melt * pat.getHeight() * 0.25f;
-        pat = pat.withTrimmedTop (sag);
-
-        juce::Path body;
-        body.addRoundedRectangle (pat.getX(), pat.getY(), pat.getWidth(), pat.getHeight(), 4.0f + melt * 5.0f);
-        if (melt > 0.05f)
+    void paintGraph (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        for (float db = -12.0f; db >= -36.0f; db -= 12.0f)
         {
-            // drips
-            const float d = melt * 7.0f;
-            body.addEllipse (pat.getX() - d * 0.6f, pat.getBottom() - 5.0f, d * 1.6f + 4.0f, 5.0f + d * 0.3f);
-            body.addEllipse (pat.getRight() - d * 1.0f - 4.0f, pat.getBottom() - 4.0f, d * 1.8f + 4.0f, 4.0f + d * 0.3f);
+            g.setColour (colours::grid);
+            g.fillRect (r.getX(), yFor (r, db), r.getWidth(), 1.0f);
         }
-        g.setGradientFill (juce::ColourGradient (colours::butter.brighter (0.3f), pat.getX(), pat.getY(), colours::butterDeep, pat.getX(), pat.getBottom(), false));
-        g.fillPath (body);
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.fillRoundedRectangle (pat.getX() + 4.0f, pat.getY() + 3.0f, pat.getWidth() * 0.4f, 2.5f, 1.2f);
+
+        const int points = juce::jlimit (50, ButterfaderAudioProcessor::historySize - 1, (int) (r.getWidth() / 2.5f));
+        const float step = r.getWidth() / (float) (points - 1);
+        const int newest = processor.historyWrite.load();
+
+        juce::Path outPath, outRim, grPath, grRim, duckPath, stPath;
+        outPath.startNewSubPath (r.getX(), r.getBottom());
+        grPath.startNewSubPath (r.getX(), r.getY());
+        duckPath.startNewSubPath (r.getX(), r.getY());
+        bool stStarted = false;
+        anyDuck = false;
+
+        for (int i = 0; i < points; ++i)
+        {
+            const auto& h = processor.history[(size_t) ((newest - (points - 1 - i) + ButterfaderAudioProcessor::historySize) % ButterfaderAudioProcessor::historySize)];
+            const float x = r.getX() + i * step;
+            const float yo = yFor (r, h.outputDb);
+            const float yg = r.getY() + juce::jlimit (0.0f, 1.0f, -h.grDb / 24.0f) * r.getHeight() * 0.9f;
+            outPath.lineTo (x, yo);
+            grPath.lineTo (x, yg);
+            if (i == 0) { outRim.startNewSubPath (x, yo); grRim.startNewSubPath (x, yg); }
+            else        { outRim.lineTo (x, yo); grRim.lineTo (x, yg); }
+            duckPath.lineTo (x, r.getY() + juce::jlimit (0.0f, 1.0f, -h.duckDb / 36.0f) * r.getHeight());
+            anyDuck = anyDuck || h.duckDb < -0.5f;
+            if (h.shortTerm > -48.0f)
+            {
+                if (! stStarted) { stPath.startNewSubPath (x, yFor (r, h.shortTerm)); stStarted = true; }
+                else stPath.lineTo (x, yFor (r, h.shortTerm));
+            }
+        }
+        outPath.lineTo (r.getRight(), r.getBottom()); outPath.closeSubPath();
+        for (auto* p : { &grPath, &duckPath }) { p->lineTo (r.getRight(), r.getY()); p->closeSubPath(); }
+
+        // output: lit from above, fading into the floor, with a bright rim
+        g.setGradientFill (juce::ColourGradient (colours::butter.withAlpha (0.62f), 0.0f, r.getY() + 24.0f,
+                                                 colours::butterDeep.withAlpha (0.03f), 0.0f, r.getBottom(), false));
+        g.fillPath (outPath);
+        g.setColour (colours::butter.withAlpha (0.25f));
+        g.strokePath (outRim, juce::PathStrokeType (3.0f));
+        g.setColour (juce::Colour (0xfffff0c2).withAlpha (0.85f));
+        g.strokePath (outRim, juce::PathStrokeType (1.0f));
+
+        if (anyDuck)
+        {
+            g.setGradientFill (juce::ColourGradient (colours::under.withAlpha (0.22f), 0.0f, r.getY(), colours::under.withAlpha (0.04f), 0.0f, r.getBottom(), false));
+            g.fillPath (duckPath);
+        }
+
+        // limiter reduction hanging from the top
+        g.setGradientFill (juce::ColourGradient (colours::red.withAlpha (0.9f), 0.0f, r.getY(), colours::red.withAlpha (0.3f), 0.0f, r.getY() + r.getHeight() * 0.3f, false));
+        g.fillPath (grPath);
+        g.setColour (colours::red);
+        g.strokePath (grRim, juce::PathStrokeType (1.2f));
+
+        // target
+        const float ty = yFor (r, readout.target);
+        const float dashes[] = { 3.0f, 4.0f };
+        g.setColour (colours::text.withAlpha (0.4f));
+        g.drawDashedLine ({ r.getX(), ty, r.getRight(), ty }, dashes, 2, 1.0f);
+
+        // short-term loudness trace, lifted off the landscape by a shadow
+        juce::DropShadow (juce::Colours::black, 6, { 0, 2 }).drawForPath (g, strokeOf (stPath, 2.2f));
+        g.setColour (colours::text);
+        g.strokePath (stPath, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
-private:
-    float melt = 0.0f;
+    void paintOverlay (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        // soft-edged shade behind each readout keeps it legible over loud audio
+        auto shade = [&] (juce::Rectangle<float> box)
+        {
+            for (int i = 12; i >= 0; --i)
+            {
+                g.setColour (colours::stage.withAlpha (0.14f));
+                g.fillRoundedRectangle (box.expanded (i * 4.0f), 12.0f + i * 4.0f);
+            }
+        };
+        shade (juce::Rectangle<float> (r.getX() - 20.0f, r.getY() - 20.0f, 420.0f, 170.0f));
+        shade (juce::Rectangle<float> (r.getRight() - 200.0f, r.getY() + 22.0f, 184.0f, 76.0f));
+
+        const auto c = loudnessColour (readout.integrated, readout.target);
+        const bool none = readout.integrated < -70.0f;
+        const juce::String big = none ? juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93\xe2\x80\x93.\xe2\x80\x93"))
+                                      : minusSign (juce::String (readout.integrated, 1));
+        drawGlowText (g, big, font (96.0f, "Light").withExtraKerningFactor (-0.03f), c, r.getX() + 22.0f, r.getY() + 108.0f, none ? 0.0f : 0.3f);
+
+        const auto unitFont = font (14.0f);
+        g.setFont (unitFont);
+        g.setColour (colours::textDim);
+        const juce::String unit = "LUFS integrated";
+        const float unitW = unitFont.getStringWidthFloat (unit);
+        g.drawText (unit, juce::Rectangle<float> (r.getX() + 28.0f, r.getY() + 120.0f, unitW + 4.0f, 20.0f), juce::Justification::centredLeft);
+        g.setColour (colours::textFaint);
+        g.drawText (dot(), juce::Rectangle<float> (r.getX() + 28.0f + unitW, r.getY() + 120.0f, 24.0f, 20.0f), juce::Justification::centred);
+        g.setColour (readout.statusColour);
+        g.setFont (font (14.0f, "Semibold"));
+        g.drawText (readout.status, juce::Rectangle<float> (r.getX() + 52.0f + unitW, r.getY() + 120.0f, 420.0f, 20.0f), juce::Justification::centredLeft, true);
+
+        // stats, top right of the graph
+        auto stats = juce::Rectangle<float> (r.getRight() - 214.0f, r.getY() + 24.0f, 190.0f, 78.0f);
+        auto row = [&] (const juce::String& name, const juce::String& value, juce::Colour vc)
+        {
+            auto line = stats.removeFromTop (26.0f);
+            const auto valueFont = font (19.0f, "Medium");
+            g.setFont (valueFont);
+            g.setColour (vc);
+            g.drawText (value, line, juce::Justification::centredRight);
+            g.setFont (font (12.5f));
+            g.setColour (colours::textDim);
+            g.drawText (name, line.withTrimmedRight (valueFont.getStringWidthFloat (value) + 8.0f), juce::Justification::centredRight);
+        };
+        auto num = [] (float v) { return v < -70.0f ? juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93")) : minusSign (juce::String (v, 1)); };
+        row ("short-term", num (readout.shortTerm), loudnessColour (readout.shortTerm, readout.target));
+        row ("true peak", num (readout.truePeak), readout.truePeak > readout.ceiling + 0.05f ? colours::red : colours::text);
+        const juce::String grWord = readout.grHeld > -0.3f ? "idle" : readout.grHeld > -3.0f ? "easy" : readout.grHeld > -6.0f ? "working" : "too hard";
+        row ("limiter", grWord, reductionColour (readout.grHeld));
+    }
+
+    void paintFooter (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        g.setColour (juce::Colour (0xff0d0c0a));
+        g.fillRect (r);
+        g.setColour (juce::Colours::black);
+        g.fillRect (r.withHeight (1.0f));
+
+        g.setFont (font (12.0f));
+        auto legend = juce::Rectangle<float> (r.getX() + 250.0f, r.getY() + 6.0f, 360.0f, 22.0f);
+        auto item = [&] (juce::Colour col, const juce::String& t, float w, bool line)
+        {
+            auto a = legend.removeFromLeft (w);
+            auto sw = a.removeFromLeft (14.0f).withSizeKeepingCentre (14.0f, line ? 2.0f : 8.0f);
+            g.setColour (col);
+            g.fillRoundedRectangle (sw, line ? 1.0f : 2.0f);
+            g.setColour (colours::textDim);
+            g.drawText (t, a.withTrimmedLeft (6.0f), juce::Justification::centredLeft);
+        };
+        item (colours::butter, "output", 76.0f, false);
+        item (colours::text, "loudness", 90.0f, true);
+        item (colours::red, "limiter", 74.0f, false);
+        if (anyDuck) item (colours::under, "ducking", 80.0f, false);
+
+        g.setColour (colours::textDim);
+        g.drawText ("Reset", resetArea(), juce::Justification::centredRight);
+    }
+
+    void paintMeters (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff0c0b09), r.getX(), 0.0f, juce::Colour (0xff13110d), r.getRight(), 0.0f, false));
+        g.fillRect (r);
+        g.setColour (juce::Colours::black);
+        g.fillRect (r.withWidth (1.0f));
+        g.setColour (juce::Colours::white.withAlpha (0.04f));
+        g.fillRect (r.withWidth (1.0f).translated (1.0f, 0.0f));
+
+        auto body = r.reduced (0.0f, 24.0f).withTrimmedBottom (18.0f);
+        auto lufsCol = juce::Rectangle<float> (r.getX() + 34.0f, body.getY(), 30.0f, body.getHeight());
+        auto grCol   = juce::Rectangle<float> (r.getX() + 80.0f, body.getY(), 20.0f, body.getHeight());
+
+        // loudness: short-term column, momentary tick, target notch
+        drawRecessed (g, lufsCol, 5.0f);
+        auto yL = [&] (float l) { return juce::jmap (juce::jlimit (-40.0f, 0.0f, l), 0.0f, -40.0f, lufsCol.getY() + 3.0f, lufsCol.getBottom() - 3.0f); };
+        if (readout.shortTerm > -40.0f)
+        {
+            const auto c = loudnessColour (readout.shortTerm, readout.target);
+            auto fill = lufsCol.reduced (3.0f).withTop (yL (readout.shortTerm));
+            juce::DropShadow (c.withAlpha (0.5f), 12, {}).drawForRectangle (g, fill.toNearestInt());
+            g.setGradientFill (juce::ColourGradient (c.brighter (0.35f), fill.getX(), 0.0f, c.darker (0.3f), fill.getRight(), 0.0f, false));
+            g.fillRoundedRectangle (fill, 3.0f);
+            g.setColour (juce::Colours::white.withAlpha (0.4f));
+            g.fillRect (fill.getX() + 4.0f, fill.getY() + 2.0f, 2.0f, fill.getHeight() - 4.0f);
+        }
+        if (readout.momentary > -40.0f)
+        {
+            g.setColour (colours::text);
+            g.fillRect (lufsCol.getX() + 2.0f, yL (readout.momentary) - 1.0f, lufsCol.getWidth() - 4.0f, 2.0f);
+        }
+        const float ty = yL (readout.target);
+        juce::Path notch;
+        notch.addTriangle (lufsCol.getX() - 9.0f, ty - 5.0f, lufsCol.getX() - 9.0f, ty + 5.0f, lufsCol.getX() - 2.0f, ty);
+        juce::DropShadow (colours::butter.withAlpha (0.7f), 6, {}).drawForPath (g, notch);
+        g.setColour (colours::butter);
+        g.fillPath (notch);
+        g.setFont (font (10.5f));
+        for (float l = 0.0f; l >= -40.0f; l -= 10.0f)
+        {
+            g.setColour (colours::textFaint);
+            g.drawText (minusSign (juce::String ((int) l)), juce::Rectangle<float> (r.getX() + 2.0f, yL (l) - 6.0f, 20.0f, 12.0f), juce::Justification::centredRight);
+        }
+
+        // gain reduction as lit segments
+        drawRecessed (g, grCol, 5.0f);
+        const int segments = 12;
+        const float segH = (grCol.getHeight() - 6.0f) / segments;
+        for (int s = 0; s < segments; ++s)
+        {
+            auto seg = juce::Rectangle<float> (grCol.getX() + 3.0f, grCol.getY() + 3.0f + s * segH, grCol.getWidth() - 6.0f, segH - 2.0f);
+            const bool lit = readout.grHeld <= -(float) s - 0.3f;
+            const auto c = reductionColour (-(float) s - 1.0f);
+            if (lit)
+            {
+                juce::DropShadow (c.withAlpha (0.6f), 8, {}).drawForRectangle (g, seg.toNearestInt());
+                g.setColour (c);
+            }
+            else
+                g.setColour (c.withAlpha (0.09f));
+            g.fillRoundedRectangle (seg, 1.5f);
+        }
+
+        g.setFont (font (11.5f));
+        g.setColour (colours::textDim);
+        g.drawText ("LUFS", juce::Rectangle<float> (lufsCol.getX() - 10.0f, body.getBottom() + 5.0f, 50.0f, 14.0f), juce::Justification::centred);
+        g.drawText ("GR", juce::Rectangle<float> (grCol.getX() - 10.0f, body.getBottom() + 5.0f, 40.0f, 14.0f), juce::Justification::centred);
+    }
+
+    ButterfaderAudioProcessor& processor;
+    Readout readout;
+    bool anyDuck = false;
 };
 
 } // namespace bf::ui

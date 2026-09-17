@@ -29,45 +29,38 @@ private:
     void timerCallback() override;
     void paintContent (juce::Graphics&);
     void layoutContent();
+    void layoutHeader();
+    void updateModeVisibility();
     juce::String statusMessage (juce::Colour& colour) const;
+    juce::String headerSpec() const;
 
     ButterfaderAudioProcessor& processor;
     bf::ui::LookAndFeel lookAndFeel;
     Content content { *this };
     juce::TooltipWindow tooltips { this, 600 };
 
-    bf::ui::ButterLogo logo;
-    bf::ui::SegmentedControl modeControl;
+    bf::ui::ModeTabs modeTabs;
     juce::ComboBox platformBox, groupBox;
     std::unique_ptr<juce::ComboBoxParameterAttachment> platformAttachment, groupAttachment;
-    bf::ui::CompareButton compare;
+    bf::ui::CompareKey compare;
 
-    bf::ui::AutoSwitch autoSwitch, guardSwitch;
+    bf::ui::StageView stage;
+
     bf::ui::RiderFader rider;
-
-    bf::ui::HistoryView historyView;
-    bf::ui::ClipBadge clipBadge;
-    juce::TextButton resetButton { "Reset" };
-
-    bf::ui::LoudnessBar loudnessBar;
-    bf::ui::ReductionBar reductionBar;
-
-    bf::ui::SegmentedControl character, debleedControl, leveling;
+    bf::ui::LedToggle autoToggle, guardToggle;
+    bf::ui::KeySelector character, debleedSelector, leveling;
     juce::Slider targetKnob, micTargetKnob, ceilingKnob;
     std::unique_ptr<juce::SliderParameterAttachment> targetAttachment, micTargetAttachment, ceilingAttachment;
-    void updateModeVisibility();
-    juce::String linkNote() const;
 
-    // bounds of painted areas (design coordinates)
-    juce::Rectangle<float> headerArea, riderPanel, centrePanel, metersPanel, controlsPanel, readoutArea, statusArea;
+    juce::Rectangle<float> topBar, rail, specArea;
+    std::array<float, 2> dividers {};
 
     // latest meter values
-    float shortTerm = -120.0f, momentary = -120.0f, integrated = -120.0f, truePeak = -120.0f, target = -14.0f, ceiling = -1.0f;
-    float grHeld = 0.0f;
-    float duck = 0.0f;
-    bool bypassed = false, autoOn = true, learning = true, riding = false, clippingNow = false, ceilingCapped = false;
+    float shortTerm = -120.0f, integrated = -120.0f, target = -14.0f, ceiling = -1.0f, grHeld = 0.0f, duck = 0.0f;
+    bool bypassed = false, autoOn = true, learning = true, clippingNow = false, ceilingCapped = false;
     bool micMode = false, talkingNow = false, duckingBleed = false;
-    int platform = 0, debleed = 0, linkedMics = 0, linkedTalking = 0;
+    int platform = -1, debleed = -1, linkedMics = 0, linkedTalking = 0;
+    juce::String lastSpec;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ButterfaderAudioProcessorEditor)
 };

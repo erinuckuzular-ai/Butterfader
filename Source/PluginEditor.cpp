@@ -2,51 +2,39 @@
 
 using namespace bf::ui;
 
-namespace
-{
-    juce::String lufsText (float v) { return v < -70.0f ? juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93")) : juce::String (v, 1); }
-}
-
 ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAudioProcessor& p)
     : AudioProcessorEditor (p), processor (p),
+      modeTabs (*p.apvts.getParameter ("mode")),
       compare (*p.apvts.getParameter ("bypass")),
-      modeControl (*p.apvts.getParameter ("mode"), { "Mic", "Master" }, "Mode"),
-      autoSwitch (*p.apvts.getParameter ("auto"), "Auto", "Manual"),
-      guardSwitch (*p.apvts.getParameter ("guard"), "Noise guard", "Noise guard"),
+      stage (p),
       rider (*p.apvts.getParameter ("inputGain")),
-      historyView (p),
+      autoToggle (*p.apvts.getParameter ("auto"), "Auto", colours::green),
+      guardToggle (*p.apvts.getParameter ("guard"), "Noise guard", colours::green),
       character (*p.apvts.getParameter ("character"), { "Clean", "Punchy", "Smooth" }, "Character"),
-      debleedControl (*p.apvts.getParameter ("debleed"), { "Off", "Gate", "Linked" }, "Debleed"),
+      debleedSelector (*p.apvts.getParameter ("debleed"), { "Off", "Gate", "Linked" }, "Debleed"),
       leveling (*p.apvts.getParameter ("speed"), { "Gentle", "Normal", "Tight" }, "Leveling")
 {
     setLookAndFeel (&lookAndFeel);
     addAndMakeVisible (content);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &logo, &modeControl, &platformBox, &groupBox, &compare, &autoSwitch, &guardSwitch,
-                                                             &rider, &historyView, &clipBadge, &resetButton, &loudnessBar, &reductionBar,
-                                                             &character, &debleedControl, &leveling, &targetKnob, &micTargetKnob, &ceilingKnob })
+    for (auto* c : std::initializer_list<juce::Component*> { &modeTabs, &platformBox, &groupBox, &compare, &stage, &rider,
+                                                             &autoToggle, &guardToggle, &character, &debleedSelector, &leveling,
+                                                             &targetKnob, &micTargetKnob, &ceilingKnob })
         content.addAndMakeVisible (c);
 
     platformBox.addItemList (bf::platformNames(), 1);
-    platformBox.setJustificationType (juce::Justification::centredLeft);
     platformAttachment = std::make_unique<juce::ComboBoxParameterAttachment> (*p.apvts.getParameter ("platform"), platformBox);
     platformBox.setTooltip ("Where is this going? Butterfader aims for that platform's loudness and peak rules.");
 
     groupBox.addItemList ({ "Link group A", "Link group B", "Link group C", "Link group D" }, 1);
-    groupBox.setJustificationType (juce::Justification::centredLeft);
     groupAttachment = std::make_unique<juce::ComboBoxParameterAttachment> (*p.apvts.getParameter ("group"), groupBox);
     groupBox.setTooltip ("Mics in the same group duck each other's bleed. Use different groups for separate shows or scenes.");
 
-    guardSwitch.setTooltip ("Learns the background hiss and hum and never turns it up. Between phrases it's pushed back down.");
+    autoToggle.setTooltip ("Rides the gain so the level lands on the target, even from a quiet recording.");
+    guardToggle.setTooltip ("Learns the background hiss and hum and never turns it up. Between phrases it's pushed back down.");
 
-    clipBadge.setTooltip ("Watches the audio coming IN. If the recording itself clipped, no limiter can undo it. Click to clear.");
-    clipBadge.onReset = [this] { processor.resetRequested = true; };
-
-    resetButton.setTooltip ("Start the integrated loudness and true-peak readings again");
-    resetButton.onClick = [this] { processor.resetRequested = true; };
-    resetButton.setColour (juce::TextButton::buttonColourId, colours::panelRaised);
-    resetButton.setColour (juce::TextButton::textColourOffId, colours::textDim);
-    resetButton.setColour (juce::ComboBox::outlineColourId, colours::edge);
+    stage.onReset = [this] { processor.resetRequested = true; };
+    stage.clipBadge.onReset = [this] { processor.resetRequested = true; };
 
     for (auto* knob : { &targetKnob, &micTargetKnob, &ceilingKnob })
     {
@@ -54,14 +42,14 @@ ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAud
         knob->setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         knob->setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
     }
-    targetAttachment  = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("target"), targetKnob);
+    targetAttachment    = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("target"), targetKnob);
     micTargetAttachment = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("micTarget"), micTargetKnob);
-    micTargetKnob.setTooltip ("How loud each voice is levelled to. Leave headroom here and let the Master instance hit the platform.");
-    micTargetKnob.setDoubleClickReturnValue (true, -20.0f);
-    ceilingAttachment = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("ceiling"), ceilingKnob);
+    ceilingAttachment   = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("ceiling"), ceilingKnob);
     targetKnob.setTooltip ("Your own loudness target. Pick Custom in the platform menu to use it.");
+    micTargetKnob.setTooltip ("How loud each voice is levelled to. Leave headroom here and let the Master instance hit the platform.");
     ceilingKnob.setTooltip ("Highest true peak allowed. -1 dBTP keeps streaming encoders from clipping.");
     targetKnob.setDoubleClickReturnValue (true, -14.0f);
+    micTargetKnob.setDoubleClickReturnValue (true, -20.0f);
     ceilingKnob.setDoubleClickReturnValue (true, -1.0f);
 
     auto* constrainer = getConstrainer();
@@ -71,7 +59,6 @@ ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAud
     setSize (designWidth, designHeight);
 
     timerCallback();
-    updateModeVisibility();
     startTimerHz (30);
 }
 
@@ -89,283 +76,215 @@ void ButterfaderAudioProcessorEditor::resized()
 //==============================================================================
 void ButterfaderAudioProcessorEditor::timerCallback()
 {
-    shortTerm   = processor.shortTermLufs.load();
-    momentary   = processor.momentaryLufs.load();
-    integrated  = processor.integratedLufs.load();
-    truePeak    = processor.outputTruePeakMaxDb.load();
-    target      = processor.getTargetLufs();
-    ceiling     = processor.getCeilingDb();
+    shortTerm     = processor.shortTermLufs.load();
+    integrated    = processor.integratedLufs.load();
+    target        = processor.getTargetLufs();
+    ceiling       = processor.getCeilingDb();
     ceilingCapped = processor.isCeilingCappedByPlatform();
-    bypassed    = processor.apvts.getRawParameterValue ("bypass")->load() > 0.5f;
-    autoOn      = processor.apvts.getRawParameterValue ("auto")->load() > 0.5f;
-    platform    = (int) processor.apvts.getRawParameterValue ("platform")->load();
-    learning    = processor.riderLearning.load();
-    riding      = processor.riderActive.load();
-    clippingNow = processor.clippingNow.load();
-    duck        = processor.duckDb.load();
-    talkingNow  = processor.talking.load();
-    duckingBleed = processor.duckingBleed.load();
-    debleed     = processor.getDebleedMode();
-    linkedMics  = processor.linkedMics.load();
+    bypassed      = processor.apvts.getRawParameterValue ("bypass")->load() > 0.5f;
+    autoOn        = processor.apvts.getRawParameterValue ("auto")->load() > 0.5f;
+    learning      = processor.riderLearning.load();
+    clippingNow   = processor.clippingNow.load();
+    duck          = processor.duckDb.load();
+    talkingNow    = processor.talking.load();
+    duckingBleed  = processor.duckingBleed.load();
+    linkedMics    = processor.linkedMics.load();
     linkedTalking = processor.linkedTalking.load();
 
-    if (processor.isMicMode() != micMode)
+    const int newPlatform = (int) processor.apvts.getRawParameterValue ("platform")->load();
+    const int newDebleed = processor.getDebleedMode();
+    if (processor.isMicMode() != micMode || newPlatform != platform || newDebleed != debleed)
     {
         micMode = processor.isMicMode();
+        platform = newPlatform;
+        debleed = newDebleed;
         updateModeVisibility();
     }
 
-    rider.setLive (processor.autoGainDb.load(), autoOn, riding, learning);
-    loudnessBar.setValues (shortTerm, momentary, target);
-    reductionBar.setValue (processor.grPeakDb.exchange (0.0f));
-    grHeld = reductionBar.getHeld();
-    logo.setMelt (-grHeld / 9.0f);
-    clipBadge.setState (processor.clipCount.load(), clippingNow);
-    historyView.setTarget (target);
-    historyView.repaint();
+    // limiter meter: instant attack, gentle fall
+    const float gr = juce::jlimit (-12.0f, 0.0f, processor.grPeakDb.exchange (0.0f));
+    grHeld = gr < grHeld ? gr : grHeld + (gr - grHeld) * 0.12f;
+
+    rider.setLive (processor.autoGainDb.load(), autoOn, processor.riderActive.load(), learning);
+    stage.clipBadge.setState (processor.clipCount.load(), clippingNow);
+
+    StageView::Readout r;
+    r.integrated = integrated;
+    r.shortTerm = shortTerm;
+    r.momentary = processor.momentaryLufs.load();
+    r.truePeak = processor.outputTruePeakMaxDb.load();
+    r.target = target;
+    r.ceiling = ceiling;
+    r.grHeld = grHeld;
+    r.duck = duck;
+    r.status = statusMessage (r.statusColour);
+    stage.setReadout (r);
 
     targetKnob.setEnabled (platform == bf::customPlatform);
-    groupBox.setVisible (micMode && debleed == ButterfaderAudioProcessor::debleedLinked);
-    content.repaint (headerArea.getSmallestIntegerContainer());
-    content.repaint (readoutArea.getSmallestIntegerContainer());
-    content.repaint (statusArea.getSmallestIntegerContainer());
-    content.repaint (metersPanel.getSmallestIntegerContainer().removeFromBottom (60));
-    content.repaint (controlsPanel.getSmallestIntegerContainer());
+
+    const auto spec = headerSpec();
+    if (spec != lastSpec)
+    {
+        lastSpec = spec;
+        layoutHeader();
+    }
+    content.repaint (rail.getSmallestIntegerContainer());
 }
 
 void ButterfaderAudioProcessorEditor::updateModeVisibility()
 {
-    micMode = processor.isMicMode();
     platformBox.setVisible (! micMode);
-    groupBox.setVisible (micMode && processor.getDebleedMode() == ButterfaderAudioProcessor::debleedLinked);
+    groupBox.setVisible (micMode && debleed == ButterfaderAudioProcessor::debleedLinked);
     character.setVisible (! micMode);
-    debleedControl.setVisible (micMode);
+    debleedSelector.setVisible (micMode);
     targetKnob.setVisible (! micMode);
     micTargetKnob.setVisible (micMode);
+    lastSpec = {};
     content.repaint();
 }
 
-juce::String ButterfaderAudioProcessorEditor::linkNote() const
+juce::String ButterfaderAudioProcessorEditor::headerSpec() const
 {
-    const juce::String dot (juce::CharPointer_UTF8 ("  \xc2\xb7  "));
-    if (debleed == ButterfaderAudioProcessor::debleedOff)  return "Debleed is off";
-    if (debleed == ButterfaderAudioProcessor::debleedGate) return "Gate: ducks quiet bleed on its own";
-    if (linkedMics == 0) return "No other linked mics yet, gating on its own";
+    const auto num = [] (float v, int places) { return minusSign (juce::String (v, places)); };
+    if (! micMode)
+        return num (target, target == std::round (target) ? 0 : 1) + " LUFS" + dot() + num (ceiling, 1) + " dBTP";
+
+    if (debleed == ButterfaderAudioProcessor::debleedOff)  return "Debleed off";
+    if (debleed == ButterfaderAudioProcessor::debleedGate) return "Gating bleed on its own";
+    if (linkedMics == 0) return "No other mics linked yet";
     const juce::String others = juce::String (linkedMics) + (linkedMics == 1 ? " other mic" : " other mics");
-    if (talkingNow)       return "Linked with " + others + dot + "this mic is talking";
-    if (linkedTalking > 0) return "Linked with " + others + dot + "someone else is talking";
+    if (talkingNow)        return others + dot() + "this one's talking";
+    if (linkedTalking > 0) return others + dot() + "someone else talking";
     return "Linked with " + others;
 }
 
 juce::String ButterfaderAudioProcessorEditor::statusMessage (juce::Colour& colour) const
 {
-    const float diff = shortTerm - target;
+    const float level = integrated > -70.0f ? integrated : shortTerm;   // same number the big readout shows
+    const float diff = level - target;
     colour = colours::textDim;
 
-    if (bypassed)              { colour = colours::under; return "Hearing the original, level matched"; }
-    if (shortTerm < -70.0f)    return "Waiting for audio. Press play.";
-    if (clippingNow)           { colour = colours::red; return "Your source was already clipping before it got here"; }
-    if (autoOn && learning)    { colour = colours::butter; return "Listening... finding your level"; }
+    if (bypassed)              { colour = colours::under; return "hearing the original, level matched"; }
+    if (shortTerm < -70.0f)    return "waiting for audio";
+    if (clippingNow)           { colour = colours::red; return "the source was already clipping"; }
+    if (autoOn && learning)    { colour = colours::butter; return "listening, finding your level"; }
     if (micMode && duck < -6.0f)
     {
         colour = colours::under;
-        return duckingBleed ? "Ducking bleed from another mic" : "Holding background noise down";
+        return duckingBleed ? "ducking bleed from another mic" : "holding background noise down";
     }
-    if (grHeld < -6.0f)        { colour = colours::red; return "Limiter working hard. Try Smooth, or Gentle leveling"; }
-    if (diff > 3.0f)           { colour = colours::red; return micMode ? juce::String ("Hotter than the voice level") : "Too loud for " + juce::String (bf::platforms[platform].name); }
-    if (diff > 1.0f)           { colour = colours::amber; return "A touch hot, easing it down"; }
-    if (diff < -2.0f)          { colour = colours::under; return autoOn ? "Quiet passage, bringing it up" : "Under target. Turn on Auto, or add gain"; }
+    if (grHeld < -6.0f)        { colour = colours::red; return "limiter working hard, try Smooth"; }
+    if (diff > 3.0f)           { colour = colours::red; return "too loud"; }
+    if (diff > 1.0f)           { colour = colours::amber; return "a touch hot, easing down"; }
+    if (diff < -2.0f)          { colour = colours::under; return autoOn ? "under target, bringing it up" : "under target, turn on Auto"; }
     colour = colours::green;
-    return "Sitting nicely on target";
+    return "on target";
 }
 
 //==============================================================================
 void ButterfaderAudioProcessorEditor::layoutContent()
 {
-    const float pad = 20.0f, gap = 12.0f;
-    auto area = juce::Rectangle<float> (0, 0, (float) designWidth, (float) designHeight).reduced (pad, 0.0f);
+    auto area = juce::Rectangle<float> (0, 0, (float) designWidth, (float) designHeight);
+    topBar = area.removeFromTop (64.0f);
+    rail = area.removeFromBottom (214.0f);
+    stage.setBounds (area.toNearestInt());
 
-    headerArea = area.removeFromTop (104.0f).withTrimmedTop (14.0f);
-    controlsPanel = area.removeFromBottom (92.0f).translated (0.0f, -pad);
-    area.removeFromBottom (pad + gap);
+    modeTabs.setBounds (juce::Rectangle<float> (196.0f, 12.0f, 150.0f, 40.0f).toNearestInt());
+    compare.setBounds (juce::Rectangle<float> (topBar.getRight() - 24.0f - 160.0f, 10.0f, 160.0f, 44.0f).toNearestInt());
+    layoutHeader();
 
-    riderPanel  = area.removeFromLeft (150.0f);
-    area.removeFromLeft (gap);
-    metersPanel = area.removeFromRight (196.0f);
-    area.removeFromRight (gap);
-    centrePanel = area;
+    const float top = rail.getY() + 24.0f;
+    rider.setBounds (juce::Rectangle<float> (28.0f, top, 276.0f, 106.0f).toNearestInt());
+    autoToggle.setBounds (juce::Rectangle<float> (28.0f, top + 132.0f, 76.0f, 24.0f).toNearestInt());
+    guardToggle.setBounds (juce::Rectangle<float> (116.0f, top + 132.0f, 130.0f, 24.0f).toNearestInt());
 
-    // header
-    auto h = headerArea;
-    logo.setBounds (h.removeFromLeft (46.0f).withSizeKeepingCentre (46.0f, 42.0f).toNearestInt());
-    auto compareBounds = h.removeFromRight (196.0f).withSizeKeepingCentre (196.0f, 48.0f).translated (0.0f, -4.0f);
-    compare.setBounds (compareBounds.toNearestInt());
-    h.removeFromRight (14.0f);
-    auto platformArea = h.removeFromRight (256.0f);
-    platformBox.setBounds (platformArea.withSizeKeepingCentre (256.0f, 44.0f).translated (0.0f, 2.0f).toNearestInt());
-    groupBox.setBounds (platformBox.getBounds());
-    h.removeFromRight (14.0f);
-    auto modeArea = h.removeFromRight (150.0f);
-    modeControl.setBounds (juce::Rectangle<float> (modeArea.getX(), (float) platformBox.getY() - 18.0f, 150.0f, 60.0f).toNearestInt());
+    character.setBounds (juce::Rectangle<float> (352.0f, top, 250.0f, 62.0f).toNearestInt());
+    debleedSelector.setBounds (character.getBounds());
+    leveling.setBounds (juce::Rectangle<float> (352.0f, top + 94.0f, 250.0f, 62.0f).toNearestInt());
 
-    // rider
-    auto rp = riderPanel.reduced (14.0f);
-    rp.removeFromTop (22.0f);
-    autoSwitch.setBounds (rp.removeFromTop (28.0f).toNearestInt());
-    rp.removeFromTop (4.0f);
-    guardSwitch.setBounds (rp.removeFromTop (28.0f).toNearestInt());
-    rp.removeFromTop (4.0f);
-    rider.setBounds (rp.toNearestInt());
-
-    // centre
-    auto cp = centrePanel.reduced (14.0f);
-    auto top = cp.removeFromTop (28.0f);
-    clipBadge.setBounds (top.removeFromRight (176.0f).toNearestInt());
-    statusArea = top.withTrimmedRight (8.0f).translated (14.0f, 14.0f).withX (centrePanel.getX() + 14.0f);
-    cp.removeFromTop (10.0f);
-    readoutArea = cp.removeFromBottom (74.0f);
-    cp.removeFromBottom (8.0f);
-    historyView.setBounds (cp.toNearestInt());
-    resetButton.setBounds (readoutArea.getRight() - 54, (int) readoutArea.getY() + 8, 54, 22);
-
-    // meters
-    auto mp = metersPanel.reduced (10.0f, 14.0f);
-    mp.removeFromBottom (44.0f);
-    loudnessBar.setBounds (mp.removeFromLeft (mp.getWidth() * 0.54f).toNearestInt());
-    reductionBar.setBounds (mp.toNearestInt());
-
-    // controls
-    auto ctl = controlsPanel.reduced (18.0f, 14.0f);
-    character.setBounds (ctl.removeFromLeft (250.0f).toNearestInt());
-    debleedControl.setBounds (character.getBounds());
-    ctl.removeFromLeft (20.0f);
-    leveling.setBounds (ctl.removeFromLeft (250.0f).toNearestInt());
-    ctl.removeFromLeft (20.0f);
-    auto knobs = ctl;
-    const float kw = knobs.getWidth() / 2.0f;
-    targetKnob.setBounds (knobs.removeFromLeft (kw).removeFromLeft (60.0f).withSizeKeepingCentre (60.0f, 60.0f).toNearestInt());
+    const float knobSize = 68.0f;
+    targetKnob.setBounds (juce::Rectangle<float> (652.0f, top + 30.0f, knobSize, knobSize).toNearestInt());
     micTargetKnob.setBounds (targetKnob.getBounds());
-    ceilingKnob.setBounds (knobs.removeFromLeft (60.0f).withSizeKeepingCentre (60.0f, 60.0f).toNearestInt());
+    ceilingKnob.setBounds (juce::Rectangle<float> (800.0f, top + 30.0f, knobSize, knobSize).toNearestInt());
+
+    dividers = { 326.0f, 628.0f };
+}
+
+// The destination (or link group) reads as a title followed by its spec, right-aligned against A/B.
+void ButterfaderAudioProcessorEditor::layoutHeader()
+{
+    const auto specFont = font (13.5f);
+    const float specW = specFont.getStringWidthFloat (lastSpec.isEmpty() ? headerSpec() : lastSpec) + 4.0f;
+    const float right = (float) compare.getX() - 24.0f;
+    specArea = { right - specW, 12.0f, specW, 40.0f };
+
+    auto& box = micMode ? groupBox : platformBox;
+    const float boxW = font (17.0f, "Semibold").getStringWidthFloat (box.getText()) + 30.0f;
+    const auto boxBounds = juce::Rectangle<float> (specArea.getX() - 12.0f - boxW, 12.0f, boxW, 40.0f).toNearestInt();
+    platformBox.setBounds (boxBounds);
+    groupBox.setBounds (boxBounds);
+    if (micMode && debleed != ButterfaderAudioProcessor::debleedLinked)
+        specArea.setX (boxBounds.getRight() - specW);
+    content.repaint (topBar.getSmallestIntegerContainer());
 }
 
 void ButterfaderAudioProcessorEditor::paintContent (juce::Graphics& g)
 {
     g.fillAll (colours::background);
 
-    // header
+    // top bar
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1a1813), 0.0f, 0.0f, juce::Colour (0xff12110d), 0.0f, topBar.getBottom(), false));
+    g.fillRect (topBar);
+    g.setColour (juce::Colours::white.withAlpha (0.05f));
+    g.fillRect (topBar.withHeight (1.0f));
+
     {
-        auto h = headerArea;
-        h.removeFromLeft (58.0f);
-        auto wordmark = h.removeFromLeft (190.0f);
+        const auto word = font (21.0f, "Bold").withExtraKerningFactor (-0.02f);
+        g.setFont (word);
+        const float w1 = word.getStringWidthFloat ("butter");
         g.setColour (colours::text);
-        g.setFont (font (28.0f, true).withExtraKerningFactor (-0.02f));
-        const float midY = logo.getBounds().toFloat().getCentreY();
-        g.drawText ("butterfader", wordmark.withY (midY - 26.0f).withHeight (32.0f), juce::Justification::centredLeft);
-        g.setColour (colours::textDim);
-        g.setFont (font (12.5f));
-        g.drawText ("smooth, loud, never too loud", wordmark.withY (midY + 7.0f).withHeight (18.0f), juce::Justification::centredLeft);
-
-        auto pb = platformBox.getBounds().toFloat();
-        drawCaption (g, micMode ? "Debleed link" : "Deliver to", pb.withY (pb.getY() - 18.0f).withHeight (16.0f));
-        const auto& plat = bf::platforms[platform];
-        g.setColour (colours::textDim);
-        g.setFont (font (11.5f));
-        if (micMode && debleed != ButterfaderAudioProcessor::debleedLinked)
-        {
-            auto card = pb.reduced (0.5f);
-            g.setColour (colours::panelRaised);
-            g.fillRoundedRectangle (card, 10.0f);
-            g.setColour (colours::edge.brighter (0.2f));
-            g.drawRoundedRectangle (card, 10.0f, 1.2f);
-            g.setColour (colours::textDim);
-            g.setFont (font (14.0f, true));
-            g.drawText (debleed == ButterfaderAudioProcessor::debleedGate ? "Solo gate" : "Not linked", card.withTrimmedLeft (14.0f), juce::Justification::centredLeft);
-            g.setFont (font (11.5f));
-        }
-        const juce::String spec = micMode ? linkNote()
-                                          : juce::String (target, target == std::round (target) ? 0 : 1) + " LUFS  \xc2\xb7  " + juce::String (ceiling, 1) + " dBTP  \xc2\xb7  " + plat.note;
-        g.drawText (juce::String (juce::CharPointer_UTF8 (spec.toRawUTF8())), pb.withY (pb.getBottom() + 3.0f).withHeight (16.0f).withTrimmedLeft (2.0f).withWidth (420.0f),
-                    juce::Justification::centredLeft, true);
+        g.drawText ("butter", juce::Rectangle<float> (28.0f, 0.0f, 120.0f, topBar.getHeight()), juce::Justification::centredLeft);
+        g.setColour (colours::butter);
+        g.drawText ("fader", juce::Rectangle<float> (28.0f + w1, 0.0f, 120.0f, topBar.getHeight()), juce::Justification::centredLeft);
     }
 
-    drawPanel (g, riderPanel);
-    drawPanel (g, centrePanel);
-    drawPanel (g, metersPanel);
-    drawPanel (g, controlsPanel);
+    g.setFont (font (13.5f));
+    g.setColour (colours::textDim);
+    g.drawText (lastSpec, specArea, juce::Justification::centredLeft);
 
-    drawCaption (g, "Rider", riderPanel.reduced (14.0f).removeFromTop (16.0f));
-
-    // status line
+    // rail: a faceplate lit from above, with engraved dividers between sections
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1c1a14), 0.0f, rail.getY(), juce::Colour (0xff100f0b), 0.0f, rail.getBottom(), false));
+    g.fillRect (rail);
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
+    g.fillRect (rail.withHeight (1.0f));
+    for (auto x : dividers)
     {
-        juce::Colour c;
-        const auto msg = statusMessage (c);
-        auto s = centrePanel.reduced (14.0f).removeFromTop (28.0f).withTrimmedRight (184.0f);
-        g.setColour (c);
-        g.fillEllipse (s.getX(), s.getCentreY() - 4.0f, 8.0f, 8.0f);
-        g.setColour (c == colours::textDim ? colours::textDim : colours::text);
-        g.setFont (font (15.0f, true));
-        g.drawText (msg, s.withTrimmedLeft (16.0f), juce::Justification::centredLeft, true);
+        g.setColour (juce::Colours::black.withAlpha (0.8f));
+        g.fillRect (x, rail.getY() + 24.0f, 1.0f, rail.getHeight() - 48.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        g.fillRect (x + 1.0f, rail.getY() + 24.0f, 1.0f, rail.getHeight() - 48.0f);
     }
 
-    // readouts
-    {
-        auto r = readoutArea;
-        auto cell = [&] (juce::Rectangle<float> a, const juce::String& caption, const juce::String& value, const juce::String& unit,
-                         juce::Colour colour, float size)
-        {
-            drawCaption (g, caption, a.removeFromTop (16.0f));
-            g.setColour (colour);
-            g.setFont (mono (size));
-            const float valueWidth = mono (size).getStringWidthFloat (value);
-            auto line = a.withTrimmedTop (2.0f);
-            g.drawText (value, line, juce::Justification::topLeft);
-            g.setColour (colours::textDim);
-            g.setFont (font (12.0f, true));
-            g.drawText (unit, line.withTrimmedLeft (valueWidth + 5.0f).withHeight (size * 0.95f), juce::Justification::bottomLeft);
-        };
-
-        const bool tpOver = truePeak > ceiling + 0.05f;
-        cell (r.removeFromLeft (170.0f), "Integrated", lufsText (integrated), "LUFS", loudnessColour (integrated, target), 38.0f);
-        cell (r.removeFromLeft (112.0f), "Short-term", lufsText (shortTerm), "LUFS", loudnessColour (shortTerm, target), 22.0f);
-        cell (r.removeFromLeft (112.0f), "True peak", truePeak < -70.0f ? lufsText (truePeak) : juce::String (truePeak, 1), "dBTP",
-              tpOver ? colours::red : colours::text, 22.0f);
-    }
-
-    // reduction verdict
-    {
-        auto v = metersPanel.reduced (12.0f, 14.0f).removeFromBottom (40.0f);
-        const auto c = reductionColour (grHeld);
-        const juce::String word = grHeld > -0.3f ? "Relaxed" : grHeld > -3.0f ? "Easy" : grHeld > -6.0f ? "Working" : "Too hard";
-        g.setColour (c.withAlpha (0.14f));
-        g.fillRoundedRectangle (v, 10.0f);
-        g.setColour (c);
-        g.setFont (font (14.0f, true));
-        g.drawText (word, v.removeFromTop (22.0f).withTrimmedTop (4.0f), juce::Justification::centred);
-        g.setColour (colours::textDim);
-        g.setFont (font (11.0f));
-        g.drawText (micMode && duck < -0.5f ? "limiter " + juce::String (grHeld, 1) + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  duck ")) + juce::String (duck, 0)
-                                            : juce::String (grHeld, 1) + " dB reduction",
-                    v, juce::Justification::centred);
-    }
-
-    // knob captions and values
-    auto knobText = [&] (juce::Slider& knob, const juce::String& caption, const juce::String& value, const juce::String& hint, bool dim)
+    // knob labels and values
+    auto knobText = [&] (juce::Slider& knob, const juce::String& caption, float value, const juce::String& unit, const juce::String& hint, bool dim)
     {
         auto b = knob.getBounds().toFloat();
-        auto text = juce::Rectangle<float> (b.getRight() + 8.0f, b.getY() + 2.0f, 130.0f, b.getHeight() - 4.0f);
-        drawCaption (g, caption, text.removeFromTop (16.0f));
+        drawLabel (g, caption, juce::Rectangle<float> (b.getX(), rail.getY() + 24.0f, 140.0f, 18.0f));
+        const auto valueText = minusSign (juce::String (value, 1));
+        const auto vf = font (26.0f, "Light");
+        g.setFont (vf);
         g.setColour (dim ? colours::textDim : colours::text);
-        g.setFont (mono (18.0f));
-        g.drawText (value, text.removeFromTop (24.0f), juce::Justification::centredLeft);
+        g.drawText (valueText, juce::Rectangle<float> (b.getX(), b.getBottom() + 8.0f, 140.0f, 30.0f), juce::Justification::centredLeft);
+        g.setFont (font (12.5f));
+        g.setColour (colours::textDim);
+        g.drawText (unit, juce::Rectangle<float> (b.getX() + vf.getStringWidthFloat (valueText) + 6.0f, b.getBottom() + 14.0f, 60.0f, 22.0f), juce::Justification::centredLeft);
         g.setColour (colours::textFaint);
-        g.setFont (font (10.5f));
-        g.drawText (hint, text, juce::Justification::topLeft, true);
+        g.drawText (hint, juce::Rectangle<float> (b.getX(), b.getBottom() + 36.0f, 140.0f, 16.0f), juce::Justification::centredLeft);
     };
+
     if (micMode)
-        knobText (micTargetKnob, "Voice level", juce::String (target, 1), "LUFS per mic", false);
+        knobText (micTargetKnob, "Voice level", target, "LUFS", "per mic", false);
     else
-        knobText (targetKnob, "Target", juce::String (target, 1),
-                  platform == bf::customPlatform ? "LUFS, custom" : "LUFS, set by platform", platform != bf::customPlatform);
-    knobText (ceilingKnob, "Ceiling", juce::String (ceiling, 1),
-              ceilingCapped ? (micMode ? "dBTP, mic headroom" : "dBTP, platform limit") : "dBTP", false);
+        knobText (targetKnob, "Target", target, "LUFS", platform == bf::customPlatform ? "custom" : "set by platform", platform != bf::customPlatform);
+    knobText (ceilingKnob, "Ceiling", ceiling, "dBTP", ceilingCapped ? (micMode ? "mic headroom" : "platform limit") : "true peak", false);
 }

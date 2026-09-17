@@ -66,3 +66,7 @@ cmake --build build --target UISnapshot && ./build/UISnapshot_artefacts/Release/
 ```
 
 Source layout: `Source/DSP/Loudness.h` (BS.1770 meter), `Source/DSP/TruePeakLimiter.h`, `Source/DSP/Rider.h`, `Source/DSP/MicLink.h` (debleed link + noise floor), `Source/Platforms.h` (targets), `Source/UI/`.
+
+## License
+
+Butterfader is free software under the [GNU Affero General Public License v3.0](LICENSE). It's built with [JUCE](https://juce.com), used under JUCE's AGPLv3 option.

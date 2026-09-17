@@ -10,24 +10,34 @@ namespace
 ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAudioProcessor& p)
     : AudioProcessorEditor (p), processor (p),
       compare (*p.apvts.getParameter ("bypass")),
-      autoSwitch (*p.apvts.getParameter ("auto")),
+      modeControl (*p.apvts.getParameter ("mode"), { "Mic", "Master" }, "Mode"),
+      autoSwitch (*p.apvts.getParameter ("auto"), "Auto", "Manual"),
+      guardSwitch (*p.apvts.getParameter ("guard"), "Noise guard", "Noise guard"),
       rider (*p.apvts.getParameter ("inputGain")),
       historyView (p),
       character (*p.apvts.getParameter ("character"), { "Clean", "Punchy", "Smooth" }, "Character"),
+      debleedControl (*p.apvts.getParameter ("debleed"), { "Off", "Gate", "Linked" }, "Debleed"),
       leveling (*p.apvts.getParameter ("speed"), { "Gentle", "Normal", "Tight" }, "Leveling")
 {
     setLookAndFeel (&lookAndFeel);
     addAndMakeVisible (content);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &logo, &platformBox, &compare, &autoSwitch, &rider, &historyView,
-                                                             &clipBadge, &resetButton, &loudnessBar, &reductionBar,
-                                                             &character, &leveling, &targetKnob, &ceilingKnob })
+    for (auto* c : std::initializer_list<juce::Component*> { &logo, &modeControl, &platformBox, &groupBox, &compare, &autoSwitch, &guardSwitch,
+                                                             &rider, &historyView, &clipBadge, &resetButton, &loudnessBar, &reductionBar,
+                                                             &character, &debleedControl, &leveling, &targetKnob, &micTargetKnob, &ceilingKnob })
         content.addAndMakeVisible (c);
 
     platformBox.addItemList (bf::platformNames(), 1);
     platformBox.setJustificationType (juce::Justification::centredLeft);
     platformAttachment = std::make_unique<juce::ComboBoxParameterAttachment> (*p.apvts.getParameter ("platform"), platformBox);
     platformBox.setTooltip ("Where is this going? Butterfader aims for that platform's loudness and peak rules.");
+
+    groupBox.addItemList ({ "Link group A", "Link group B", "Link group C", "Link group D" }, 1);
+    groupBox.setJustificationType (juce::Justification::centredLeft);
+    groupAttachment = std::make_unique<juce::ComboBoxParameterAttachment> (*p.apvts.getParameter ("group"), groupBox);
+    groupBox.setTooltip ("Mics in the same group duck each other's bleed. Use different groups for separate shows or scenes.");
+
+    guardSwitch.setTooltip ("Learns the background hiss and hum and never turns it up. Between phrases it's pushed back down.");
 
     clipBadge.setTooltip ("Watches the audio coming IN. If the recording itself clipped, no limiter can undo it. Click to clear.");
     clipBadge.onReset = [this] { processor.resetRequested = true; };
@@ -38,13 +48,16 @@ ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAud
     resetButton.setColour (juce::TextButton::textColourOffId, colours::textDim);
     resetButton.setColour (juce::ComboBox::outlineColourId, colours::edge);
 
-    for (auto* knob : { &targetKnob, &ceilingKnob })
+    for (auto* knob : { &targetKnob, &micTargetKnob, &ceilingKnob })
     {
         knob->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         knob->setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         knob->setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
     }
     targetAttachment  = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("target"), targetKnob);
+    micTargetAttachment = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("micTarget"), micTargetKnob);
+    micTargetKnob.setTooltip ("How loud each voice is levelled to. Leave headroom here and let the Master instance hit the platform.");
+    micTargetKnob.setDoubleClickReturnValue (true, -20.0f);
     ceilingAttachment = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("ceiling"), ceilingKnob);
     targetKnob.setTooltip ("Your own loudness target. Pick Custom in the platform menu to use it.");
     ceilingKnob.setTooltip ("Highest true peak allowed. -1 dBTP keeps streaming encoders from clipping.");
@@ -58,6 +71,7 @@ ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAud
     setSize (designWidth, designHeight);
 
     timerCallback();
+    updateModeVisibility();
     startTimerHz (30);
 }
 
@@ -88,6 +102,18 @@ void ButterfaderAudioProcessorEditor::timerCallback()
     learning    = processor.riderLearning.load();
     riding      = processor.riderActive.load();
     clippingNow = processor.clippingNow.load();
+    duck        = processor.duckDb.load();
+    talkingNow  = processor.talking.load();
+    duckingBleed = processor.duckingBleed.load();
+    debleed     = processor.getDebleedMode();
+    linkedMics  = processor.linkedMics.load();
+    linkedTalking = processor.linkedTalking.load();
+
+    if (processor.isMicMode() != micMode)
+    {
+        micMode = processor.isMicMode();
+        updateModeVisibility();
+    }
 
     rider.setLive (processor.autoGainDb.load(), autoOn, riding, learning);
     loudnessBar.setValues (shortTerm, momentary, target);
@@ -99,11 +125,36 @@ void ButterfaderAudioProcessorEditor::timerCallback()
     historyView.repaint();
 
     targetKnob.setEnabled (platform == bf::customPlatform);
+    groupBox.setVisible (micMode && debleed == ButterfaderAudioProcessor::debleedLinked);
     content.repaint (headerArea.getSmallestIntegerContainer());
     content.repaint (readoutArea.getSmallestIntegerContainer());
     content.repaint (statusArea.getSmallestIntegerContainer());
     content.repaint (metersPanel.getSmallestIntegerContainer().removeFromBottom (60));
     content.repaint (controlsPanel.getSmallestIntegerContainer());
+}
+
+void ButterfaderAudioProcessorEditor::updateModeVisibility()
+{
+    micMode = processor.isMicMode();
+    platformBox.setVisible (! micMode);
+    groupBox.setVisible (micMode && processor.getDebleedMode() == ButterfaderAudioProcessor::debleedLinked);
+    character.setVisible (! micMode);
+    debleedControl.setVisible (micMode);
+    targetKnob.setVisible (! micMode);
+    micTargetKnob.setVisible (micMode);
+    content.repaint();
+}
+
+juce::String ButterfaderAudioProcessorEditor::linkNote() const
+{
+    const juce::String dot (juce::CharPointer_UTF8 ("  \xc2\xb7  "));
+    if (debleed == ButterfaderAudioProcessor::debleedOff)  return "Debleed is off";
+    if (debleed == ButterfaderAudioProcessor::debleedGate) return "Gate: ducks quiet bleed on its own";
+    if (linkedMics == 0) return "No other linked mics yet, gating on its own";
+    const juce::String others = juce::String (linkedMics) + (linkedMics == 1 ? " other mic" : " other mics");
+    if (talkingNow)       return "Linked with " + others + dot + "this mic is talking";
+    if (linkedTalking > 0) return "Linked with " + others + dot + "someone else is talking";
+    return "Linked with " + others;
 }
 
 juce::String ButterfaderAudioProcessorEditor::statusMessage (juce::Colour& colour) const
@@ -115,8 +166,13 @@ juce::String ButterfaderAudioProcessorEditor::statusMessage (juce::Colour& colou
     if (shortTerm < -70.0f)    return "Waiting for audio. Press play.";
     if (clippingNow)           { colour = colours::red; return "Your source was already clipping before it got here"; }
     if (autoOn && learning)    { colour = colours::butter; return "Listening... finding your level"; }
+    if (micMode && duck < -6.0f)
+    {
+        colour = colours::under;
+        return duckingBleed ? "Ducking bleed from another mic" : "Holding background noise down";
+    }
     if (grHeld < -6.0f)        { colour = colours::red; return "Limiter working hard. Try Smooth, or Gentle leveling"; }
-    if (diff > 3.0f)           { colour = colours::red; return "Too loud for " + juce::String (bf::platforms[platform].name); }
+    if (diff > 3.0f)           { colour = colours::red; return micMode ? juce::String ("Hotter than the voice level") : "Too loud for " + juce::String (bf::platforms[platform].name); }
     if (diff > 1.0f)           { colour = colours::amber; return "A touch hot, easing it down"; }
     if (diff < -2.0f)          { colour = colours::under; return autoOn ? "Quiet passage, bringing it up" : "Under target. Turn on Auto, or add gain"; }
     colour = colours::green;
@@ -142,17 +198,23 @@ void ButterfaderAudioProcessorEditor::layoutContent()
     // header
     auto h = headerArea;
     logo.setBounds (h.removeFromLeft (46.0f).withSizeKeepingCentre (46.0f, 42.0f).toNearestInt());
-    auto compareBounds = h.removeFromRight (200.0f).withSizeKeepingCentre (200.0f, 48.0f).translated (0.0f, -4.0f);
+    auto compareBounds = h.removeFromRight (196.0f).withSizeKeepingCentre (196.0f, 48.0f).translated (0.0f, -4.0f);
     compare.setBounds (compareBounds.toNearestInt());
-    h.removeFromRight (16.0f);
-    auto platformArea = h.removeFromRight (300.0f);
-    platformBox.setBounds (platformArea.withSizeKeepingCentre (300.0f, 44.0f).translated (0.0f, 2.0f).toNearestInt());
+    h.removeFromRight (14.0f);
+    auto platformArea = h.removeFromRight (256.0f);
+    platformBox.setBounds (platformArea.withSizeKeepingCentre (256.0f, 44.0f).translated (0.0f, 2.0f).toNearestInt());
+    groupBox.setBounds (platformBox.getBounds());
+    h.removeFromRight (14.0f);
+    auto modeArea = h.removeFromRight (150.0f);
+    modeControl.setBounds (juce::Rectangle<float> (modeArea.getX(), (float) platformBox.getY() - 18.0f, 150.0f, 60.0f).toNearestInt());
 
     // rider
     auto rp = riderPanel.reduced (14.0f);
     rp.removeFromTop (22.0f);
     autoSwitch.setBounds (rp.removeFromTop (28.0f).toNearestInt());
-    rp.removeFromTop (6.0f);
+    rp.removeFromTop (4.0f);
+    guardSwitch.setBounds (rp.removeFromTop (28.0f).toNearestInt());
+    rp.removeFromTop (4.0f);
     rider.setBounds (rp.toNearestInt());
 
     // centre
@@ -175,12 +237,14 @@ void ButterfaderAudioProcessorEditor::layoutContent()
     // controls
     auto ctl = controlsPanel.reduced (18.0f, 14.0f);
     character.setBounds (ctl.removeFromLeft (250.0f).toNearestInt());
+    debleedControl.setBounds (character.getBounds());
     ctl.removeFromLeft (20.0f);
     leveling.setBounds (ctl.removeFromLeft (250.0f).toNearestInt());
     ctl.removeFromLeft (20.0f);
     auto knobs = ctl;
     const float kw = knobs.getWidth() / 2.0f;
     targetKnob.setBounds (knobs.removeFromLeft (kw).removeFromLeft (60.0f).withSizeKeepingCentre (60.0f, 60.0f).toNearestInt());
+    micTargetKnob.setBounds (targetKnob.getBounds());
     ceilingKnob.setBounds (knobs.removeFromLeft (60.0f).withSizeKeepingCentre (60.0f, 60.0f).toNearestInt());
 }
 
@@ -192,7 +256,7 @@ void ButterfaderAudioProcessorEditor::paintContent (juce::Graphics& g)
     {
         auto h = headerArea;
         h.removeFromLeft (58.0f);
-        auto wordmark = h.removeFromLeft (260.0f);
+        auto wordmark = h.removeFromLeft (190.0f);
         g.setColour (colours::text);
         g.setFont (font (28.0f, true).withExtraKerningFactor (-0.02f));
         const float midY = logo.getBounds().toFloat().getCentreY();
@@ -202,11 +266,24 @@ void ButterfaderAudioProcessorEditor::paintContent (juce::Graphics& g)
         g.drawText ("smooth, loud, never too loud", wordmark.withY (midY + 7.0f).withHeight (18.0f), juce::Justification::centredLeft);
 
         auto pb = platformBox.getBounds().toFloat();
-        drawCaption (g, "Deliver to", pb.withY (pb.getY() - 18.0f).withHeight (16.0f));
+        drawCaption (g, micMode ? "Debleed link" : "Deliver to", pb.withY (pb.getY() - 18.0f).withHeight (16.0f));
         const auto& plat = bf::platforms[platform];
         g.setColour (colours::textDim);
         g.setFont (font (11.5f));
-        const juce::String spec = juce::String (target, target == std::round (target) ? 0 : 1) + " LUFS  \xc2\xb7  " + juce::String (ceiling, 1) + " dBTP  \xc2\xb7  " + plat.note;
+        if (micMode && debleed != ButterfaderAudioProcessor::debleedLinked)
+        {
+            auto card = pb.reduced (0.5f);
+            g.setColour (colours::panelRaised);
+            g.fillRoundedRectangle (card, 10.0f);
+            g.setColour (colours::edge.brighter (0.2f));
+            g.drawRoundedRectangle (card, 10.0f, 1.2f);
+            g.setColour (colours::textDim);
+            g.setFont (font (14.0f, true));
+            g.drawText (debleed == ButterfaderAudioProcessor::debleedGate ? "Solo gate" : "Not linked", card.withTrimmedLeft (14.0f), juce::Justification::centredLeft);
+            g.setFont (font (11.5f));
+        }
+        const juce::String spec = micMode ? linkNote()
+                                          : juce::String (target, target == std::round (target) ? 0 : 1) + " LUFS  \xc2\xb7  " + juce::String (ceiling, 1) + " dBTP  \xc2\xb7  " + plat.note;
         g.drawText (juce::String (juce::CharPointer_UTF8 (spec.toRawUTF8())), pb.withY (pb.getBottom() + 3.0f).withHeight (16.0f).withTrimmedLeft (2.0f).withWidth (420.0f),
                     juce::Justification::centredLeft, true);
     }
@@ -266,7 +343,9 @@ void ButterfaderAudioProcessorEditor::paintContent (juce::Graphics& g)
         g.drawText (word, v.removeFromTop (22.0f).withTrimmedTop (4.0f), juce::Justification::centred);
         g.setColour (colours::textDim);
         g.setFont (font (11.0f));
-        g.drawText (juce::String (grHeld, 1) + " dB reduction", v, juce::Justification::centred);
+        g.drawText (micMode && duck < -0.5f ? "limiter " + juce::String (grHeld, 1) + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  duck ")) + juce::String (duck, 0)
+                                            : juce::String (grHeld, 1) + " dB reduction",
+                    v, juce::Justification::centred);
     }
 
     // knob captions and values
@@ -282,8 +361,11 @@ void ButterfaderAudioProcessorEditor::paintContent (juce::Graphics& g)
         g.setFont (font (10.5f));
         g.drawText (hint, text, juce::Justification::topLeft, true);
     };
-    knobText (targetKnob, "Target", juce::String (target, 1),
-              platform == bf::customPlatform ? "LUFS, custom" : "LUFS, set by platform", platform != bf::customPlatform);
+    if (micMode)
+        knobText (micTargetKnob, "Voice level", juce::String (target, 1), "LUFS per mic", false);
+    else
+        knobText (targetKnob, "Target", juce::String (target, 1),
+                  platform == bf::customPlatform ? "LUFS, custom" : "LUFS, set by platform", platform != bf::customPlatform);
     knobText (ceilingKnob, "Ceiling", juce::String (ceiling, 1),
-              ceilingCapped ? "dBTP, platform limit" : "dBTP", false);
+              ceilingCapped ? (micMode ? "dBTP, mic headroom" : "dBTP, platform limit") : "dBTP", false);
 }

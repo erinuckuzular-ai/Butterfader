@@ -48,6 +48,11 @@ public:
         return smoothedDb;
     }
 
+    // The host decides whether the current audio may teach the rider (not noise, not another mic's bleed).
+    void  setLearningAllowed (bool allowed) { learningAllowed = allowed; }
+    bool  hasEstimate() const  { return haveEstimate; }
+    float getSpeechLufs() const { return haveEstimate ? (float) energyToLufs (estimate) : -120.0f; }
+
     float getGainDb() const    { return smoothedDb; }
     bool  isActive() const     { return active; }
     bool  isLearning() const   { return ! haveEstimate || activeSeconds < 2.0; }
@@ -64,7 +69,7 @@ private:
         const double estL = haveEstimate ? energyToLufs (estimate) : -120.0;
 
         // present: something is playing (not silence, not a pause well below the programme)
-        active = inL > -60.0 && (! haveEstimate || inL > estL - 20.0);
+        active = learningAllowed && inL > -60.0 && (! haveEstimate || inL > estL - 20.0);
         if (! active) { belowGateSeconds = 0.0; return; }  // hold through pauses
 
         // counted: mirrors the -10 LU relative gate of integrated loudness, but still follows
@@ -100,7 +105,7 @@ private:
     double sr = 48000.0, dt = 32.0 / 48000.0, momentaryCoef = 0.0;
     double outputMomentary = 0.0, belowGateSeconds = 0.0;
     double momentary = 0.0, estimate = 0.0, outputEstimate = 0.0, outputAccum = 0.0, activeSeconds = 0.0;
-    bool haveEstimate = false, active = false;
+    bool haveEstimate = false, active = false, learningAllowed = true;
     int counter = 0;
     float gainDb = 0.0f, smoothedDb = 0.0f, trimDb = 0.0f;
 };

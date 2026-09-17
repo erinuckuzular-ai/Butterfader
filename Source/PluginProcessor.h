@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "DSP/Loudness.h"
+#include "DSP/MicLink.h"
 #include "DSP/Rider.h"
 #include "DSP/TruePeakLimiter.h"
 #include "Platforms.h"
@@ -9,8 +10,14 @@
 class ButterfaderAudioProcessor : public juce::AudioProcessor
 {
 public:
+    enum Mode { micMode = 0, masterMode };
+    enum Debleed { debleedOff = 0, debleedGate, debleedLinked };
+
+    static constexpr float debleedDepthDb = 18.0f;
+    static constexpr float micCeilingDb = -2.0f;
+
     ButterfaderAudioProcessor();
-    ~ButterfaderAudioProcessor() override = default;
+    ~ButterfaderAudioProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -39,13 +46,15 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    bool  isMicMode() const { return (int) modeParam->load() == micMode; }
+    int   getDebleedMode() const { return (int) debleedParam->load(); }
     float getTargetLufs() const;
     float getCeilingDb() const;
     bool  isCeilingCappedByPlatform() const;
 
     //==============================================================================
     // Meter data, written by the audio thread and read by the editor.
-    struct HistoryPoint { float inputDb = -120.0f, outputDb = -120.0f, grDb = 0.0f, shortTerm = -120.0f; };
+    struct HistoryPoint { float inputDb = -120.0f, outputDb = -120.0f, grDb = 0.0f, duckDb = 0.0f, shortTerm = -120.0f; };
     static constexpr int historySize = 1024;
 
     std::array<HistoryPoint, historySize> history;
@@ -54,18 +63,21 @@ public:
     std::atomic<float> momentaryLufs { -120.0f }, shortTermLufs { -120.0f }, integratedLufs { -120.0f };
     std::atomic<float> grNowDb { 0.0f }, grPeakDb { 0.0f };   // grPeak: deepest since the editor last read it
     std::atomic<float> autoGainDb { 0.0f }, inputPeakDb { -120.0f }, outputTruePeakMaxDb { -120.0f };
-    std::atomic<int>   clipCount { 0 };
-    std::atomic<bool>  clippingNow { false }, riderActive { false }, riderLearning { true };
+    std::atomic<float> duckDb { 0.0f }, noiseFloorDb { -120.0f };
+    std::atomic<int>   clipCount { 0 }, linkedMics { 0 }, linkedTalking { 0 };
+    std::atomic<bool>  clippingNow { false }, riderActive { false }, riderLearning { true }, talking { false }, duckingBleed { false };
     std::atomic<bool>  resetRequested { false };
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void resetMeters();
+    void updateControl (float riderGainDb, bool guardOn, int debleed, bool micModeOn, float target, const bf::MicLink::Others& others);
 
     juce::AudioParameterBool* bypassParam = nullptr;
     std::atomic<float>* platformParam = nullptr, *targetParam = nullptr, *ceilingParam = nullptr,
                       *autoParam = nullptr, *inputGainParam = nullptr, *speedParam = nullptr,
-                      *characterParam = nullptr;
+                      *characterParam = nullptr, *modeParam = nullptr, *micTargetParam = nullptr,
+                      *debleedParam = nullptr, *groupParam = nullptr, *guardParam = nullptr;
 
     double sampleRate = 48000.0;
     int numChannels = 2;
@@ -74,6 +86,16 @@ private:
     bf::Rider rider;
     bf::TruePeakLimiter limiter;
     std::vector<bf::TruePeakDetector> outputPeak;
+
+    // mic link, debleed and noise guard (control rate)
+    static constexpr int controlInterval = 32;
+    int linkSlot = -1;
+    int controlCounter = 0;
+    double tickEnergy = 0.0, fastEnergy = 0.0, slowEnergy = 0.0, controlDt = 32.0 / 48000.0;
+    bf::NoiseFloor noiseFloor;
+    float duckTargetDb = 0.0f, duckSmoothedDb = 0.0f, duckOpenCoef = 0.0f, duckCloseCoef = 0.0f;
+    double holdSeconds = 0.0;
+    bool isTalking = false;
 
     // level-matched bypass
     std::vector<std::vector<float>> dryDelay;
@@ -90,7 +112,7 @@ private:
 
     // history accumulation
     int historyCounter = 0, historyInterval = 960;
-    float accInPeak = 0.0f, accOutPeak = 0.0f, accGrMin = 1.0f, accTp = 0.0f;
+    float accInPeak = 0.0f, accOutPeak = 0.0f, accGrMin = 1.0f, accDuckMin = 0.0f;
     float tpMax = 0.0f;
     float blockInPeak = 0.0f;
 

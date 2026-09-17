@@ -69,15 +69,16 @@ private:
 };
 
 //==============================================================================
-class AutoSwitch : public juce::Component
+class AutoSwitch : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    explicit AutoSwitch (juce::RangedAudioParameter& p)
-        : attachment (p, [this] (float v) { on = v > 0.5f; repaint(); })
+    AutoSwitch (juce::RangedAudioParameter& p, juce::String onLabel, juce::String offLabel)
+        : attachment (p, [this] (float v) { on = v > 0.5f; repaint(); }),
+          onText (std::move (onLabel)), offText (std::move (offLabel))
     {
         attachment.sendInitialUpdate();
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
-        setTitle ("Auto level");
+        setTitle (onText);
     }
 
     void paint (juce::Graphics& g) override
@@ -92,13 +93,14 @@ public:
 
         g.setColour (on ? colours::text : colours::textDim);
         g.setFont (font (13.0f, true));
-        g.drawText (on ? "Auto" : "Manual", r.withTrimmedLeft (8.0f), juce::Justification::centredLeft);
+        g.drawText (on ? onText : offText, r.withTrimmedLeft (8.0f), juce::Justification::centredLeft);
     }
 
     void mouseDown (const juce::MouseEvent&) override { attachment.setValueAsCompleteGesture (on ? 0.0f : 1.0f); }
 
 private:
     juce::ParameterAttachment attachment;
+    juce::String onText, offText;
     bool on = true;
 };
 
@@ -369,10 +371,12 @@ public:
         const float step = r.getWidth() / (float) (points - 1);
         const int newest = processor.historyWrite.load();
 
-        juce::Path inPath, outPath, grPath, stPath;
+        juce::Path inPath, outPath, grPath, duckPath, stPath;
+        bool anyDuck = false;
         inPath.startNewSubPath (r.getX(), r.getBottom());
         outPath.startNewSubPath (r.getX(), r.getBottom());
         grPath.startNewSubPath (r.getX(), r.getY());
+        duckPath.startNewSubPath (r.getX(), r.getY());
         bool stStarted = false;
 
         for (int i = 0; i < points; ++i)
@@ -382,6 +386,8 @@ public:
             inPath.lineTo (x, yFor (h.inputDb));
             outPath.lineTo (x, yFor (h.outputDb));
             grPath.lineTo (x, r.getY() + juce::jlimit (0.0f, 1.0f, -h.grDb / 24.0f) * r.getHeight());
+            duckPath.lineTo (x, r.getY() + juce::jlimit (0.0f, 1.0f, -h.duckDb / 36.0f) * r.getHeight());
+            anyDuck = anyDuck || h.duckDb < -0.5f;
             if (h.shortTerm > -48.0f)
             {
                 if (! stStarted) { stPath.startNewSubPath (x, yFor (h.shortTerm)); stStarted = true; }
@@ -391,11 +397,19 @@ public:
         inPath.lineTo (r.getRight(), r.getBottom());   inPath.closeSubPath();
         outPath.lineTo (r.getRight(), r.getBottom());  outPath.closeSubPath();
         grPath.lineTo (r.getRight(), r.getY());        grPath.closeSubPath();
+        duckPath.lineTo (r.getRight(), r.getY());      duckPath.closeSubPath();
 
         g.setColour (colours::butter.withAlpha (0.16f));
         g.fillPath (inPath);
         g.setGradientFill (juce::ColourGradient (colours::butter.withAlpha (0.85f), 0.0f, r.getY(), colours::butterDeep.withAlpha (0.35f), 0.0f, r.getBottom(), false));
         g.fillPath (outPath);
+        if (anyDuck)
+        {
+            g.setColour (colours::under.withAlpha (0.2f));
+            g.fillPath (duckPath);
+            g.setColour (colours::under.withAlpha (0.6f));
+            g.strokePath (duckPath, juce::PathStrokeType (1.0f));
+        }
         g.setColour (colours::red.withAlpha (0.75f));
         g.fillPath (grPath);
 
@@ -419,6 +433,24 @@ public:
             g.fillRoundedRectangle (label, 4.0f);
             g.setColour (colours::textDim);
             g.drawText (juce::String ((int) db), label, juce::Justification::centred);
+        }
+
+        // legend
+        {
+            auto legend = juce::Rectangle<float> (r.getX() + 8.0f, r.getBottom() - 22.0f, 250.0f, 16.0f);
+            auto chip = [&] (juce::Colour c, const juce::String& text, float width)
+            {
+                auto item = legend.removeFromLeft (width);
+                g.setColour (c);
+                g.fillRoundedRectangle (item.removeFromLeft (8.0f).withSizeKeepingCentre (8.0f, 8.0f), 2.0f);
+                g.setColour (colours::textDim);
+                g.drawText (text, item.withTrimmedLeft (5.0f), juce::Justification::centredLeft);
+            };
+            g.setColour (colours::groove.withAlpha (0.75f));
+            g.fillRoundedRectangle (legend.withWidth (anyDuck ? 216.0f : 142.0f).expanded (4.0f, 1.0f), 4.0f);
+            chip (colours::red, "limiter", 62.0f);
+            chip (colours::text, "loudness", 74.0f);
+            if (anyDuck) chip (colours::under, "ducking", 70.0f);
         }
 
         g.setColour (colours::text.withAlpha (0.9f));

@@ -78,6 +78,51 @@ static juce::AudioBuffer<float> makeProgramme (double sr, double seconds, float 
     return b;
 }
 
+
+static double integratedRange (const juce::AudioBuffer<float>& b, double sr, double fromSec, double toSec)
+{
+    juce::AudioBuffer<float> part (b.getNumChannels(), (int) ((toSec - fromSec) * sr));
+    for (int ch = 0; ch < b.getNumChannels(); ++ch)
+        part.copyFrom (ch, 0, b, ch, (int) (fromSec * sr), part.getNumSamples());
+    return integratedOf (part, sr, 0);
+}
+
+static double rmsDb (const juce::AudioBuffer<float>& b, double sr, double fromSec, double toSec)
+{
+    double sum = 0.0; int count = 0;
+    for (int ch = 0; ch < b.getNumChannels(); ++ch)
+        for (int i = (int) (fromSec * sr); i < (int) (toSec * sr); ++i, ++count)
+            sum += b.getSample (ch, i) * b.getSample (ch, i);
+    return 10.0 * std::log10 (std::max (1.0e-20, sum / std::max (1, count)));
+}
+
+// A voice that only talks when `talks(t)` is true.
+static juce::AudioBuffer<float> makeVoice (double sr, double seconds, int seed, std::function<bool (double)> talks)
+{
+    juce::Random rng (seed);
+    juce::AudioBuffer<float> b (1, (int) (sr * seconds));
+    double lp = 0.0, lp2 = 0.0, phase = 0.0;
+    const double pitch = 120.0 + seed * 23.0;
+    for (int i = 0; i < b.getNumSamples(); ++i)
+    {
+        const double t = i / sr;
+        const double syllable = std::max (0.0, std::sin (2.0 * juce::MathConstants<double>::pi * (4.0 + seed * 0.3) * t));
+        lp += (rng.nextDouble() * 2.0 - 1.0 - lp) * 0.3; lp2 += (lp - lp2) * 0.3;
+        phase += 2.0 * juce::MathConstants<double>::pi * pitch / sr;
+        b.setSample (0, i, talks (t) ? (float) (0.25 * syllable * (lp2 * 4.0 + 0.6 * std::sin (phase))) : 0.0f);
+    }
+    return b;
+}
+
+static void addHiss (juce::AudioBuffer<float>& b, float rmsDbFs, int seed)
+{
+    juce::Random rng (seed);
+    const float amp = juce::Decibels::decibelsToGain (rmsDbFs) * std::sqrt (3.0f);
+    for (int ch = 0; ch < b.getNumChannels(); ++ch)
+        for (int i = 0; i < b.getNumSamples(); ++i)
+            b.addSample (ch, i, (rng.nextFloat() * 2.0f - 1.0f) * amp);
+}
+
 static juce::AudioBuffer<float> run (ButterfaderAudioProcessor& p, juce::AudioBuffer<float> in, double sr, int block)
 {
     p.setRateAndBufferSizeDetails (sr, block);
@@ -180,6 +225,78 @@ int main()
         run (b, makeSine (false), 48000.0, 512);
         check (a.clipCount.load() > 0, "clipped source detected (events)", a.clipCount.load());
         check (b.clipCount.load() == 0, "clean source not flagged (events)", b.clipCount.load());
+    }
+
+
+    // 5. Noise guard: hiss at the start and between phrases is not boosted by the rider
+    {
+        const double sr = 48000.0;
+        auto voice = makeVoice (sr, 40.0, 1, [] (double t) { return t > 5.0 && std::fmod (t, 8.0) < 5.5; });
+        voice.applyGain ((float) juce::Decibels::decibelsToGain (-36.0 - integratedOf (voice, sr, 0)));
+        addHiss (voice, -68.0f, 9);
+        ButterfaderAudioProcessor p;
+        juce::AudioProcessor::BusesLayout layout;
+        layout.inputBuses.add (juce::AudioChannelSet::mono()); layout.outputBuses.add (juce::AudioChannelSet::mono());
+        p.setBusesLayout (layout);
+        auto out = run (p, voice, sr, 512);
+        const double hissInStart = rmsDb (voice, sr, 1.0, 4.5), hissOutStart = rmsDb (out, sr, 1.0, 4.5);
+        const double hissIn = rmsDb (voice, sr, 30.0, 31.5), hissOut = rmsDb (out, sr, 30.0, 31.5);   // pause 29.5..32
+        const double speech = integratedRange (out, sr, 24.0, 29.0);
+        std::printf ("  [noise guard] speech %.1f LUFS, gain %.1f dB, hiss at start %.1f -> %.1f dBFS, hiss in pause %.1f -> %.1f dBFS\n",
+                     speech, p.autoGainDb.load(), hissInStart, hissOutStart, hissIn, hissOut);
+        check (std::abs (speech + 14.0) < 1.5, "noise guard: speech still reaches target (LU off)", speech + 14.0);
+        check (hissOutStart <= hissInStart + 1.0, "noise guard: hiss before speech not boosted (dB)", hissOutStart - hissInStart);
+        check (hissOut <= hissIn + 1.0, "noise guard: hiss between phrases not boosted (dB)", hissOut - hissIn);
+    }
+
+    // 6. Debleed: two lapels, each picks up the other at -15 dB; mic B's preamp is 8 dB lower; both hiss
+    for (int mode : { ButterfaderAudioProcessor::debleedLinked, ButterfaderAudioProcessor::debleedGate })
+    {
+        const double sr = 48000.0, seconds = 48.0;
+        auto aTalks = [] (double t) { return std::fmod (t, 12.0) < 5.5; };
+        auto bTalks = [] (double t) { const double m = std::fmod (t, 12.0); return m > 6.0 && m < 11.5; };
+        auto voiceA = makeVoice (sr, seconds, 2, aTalks), voiceB = makeVoice (sr, seconds, 3, bTalks);
+        juce::AudioBuffer<float> micA (1, voiceA.getNumSamples()), micB (1, voiceA.getNumSamples());
+        const float bleed = juce::Decibels::decibelsToGain (-15.0f), preampB = juce::Decibels::decibelsToGain (-8.0f);
+        for (int i = 0; i < micA.getNumSamples(); ++i)
+        {
+            micA.setSample (0, i, voiceA.getSample (0, i) + bleed * voiceB.getSample (0, i));
+            micB.setSample (0, i, preampB * (voiceB.getSample (0, i) + bleed * voiceA.getSample (0, i)));
+        }
+        addHiss (micA, -66.0f, 4); addHiss (micB, -72.0f, 5);
+
+        ButterfaderAudioProcessor pa, pb;
+        for (auto* p : { &pa, &pb })
+        {
+            juce::AudioProcessor::BusesLayout layout;
+            layout.inputBuses.add (juce::AudioChannelSet::mono()); layout.outputBuses.add (juce::AudioChannelSet::mono());
+            p->setBusesLayout (layout);
+            setParam (*p, "mode", (float) ButterfaderAudioProcessor::micMode);
+            setParam (*p, "debleed", (float) mode);
+            p->setRateAndBufferSizeDetails (sr, 480);
+            p->prepareToPlay (sr, 480);
+        }
+        juce::MidiBuffer midi;
+        for (int pos = 0; pos < micA.getNumSamples(); pos += 480)   // interleaved like a host rendering two tracks
+        {
+            const int len = std::min (480, micA.getNumSamples() - pos);
+            juce::AudioBuffer<float> va (micA.getArrayOfWritePointers(), 1, pos, len), vb (micB.getArrayOfWritePointers(), 1, pos, len);
+            pa.processBlock (va, midi);
+            pb.processBlock (vb, midi);
+            juce::Thread::sleep (0);
+        }
+
+        // judge the second half, after learning: B-only talk vs A's bleed on B's mic
+        const double bOwn = integratedRange (micB, sr, 30.5, 35.0), bBleed = integratedRange (micB, sr, 24.5, 29.0);
+        const double aOwn = integratedRange (micA, sr, 24.5, 29.0), aBleed = integratedRange (micA, sr, 30.5, 35.0);
+        const char* name = mode == ButterfaderAudioProcessor::debleedLinked ? "linked" : "gate";
+        std::printf ("  [debleed %s] mic A own %.1f / bleed %.1f LUFS, mic B own %.1f / bleed %.1f LUFS (input separation 15 LU), linked peers seen %d\n",
+                     name, aOwn, aBleed, bOwn, bBleed, pa.linkedMics.load());
+        const double minSeparation = mode == ButterfaderAudioProcessor::debleedLinked ? 25.0 : 20.0;
+        check (bOwn - bBleed >= minSeparation, "  mic B separation (LU)", bOwn - bBleed);
+        check (aOwn - aBleed >= minSeparation, "  mic A separation (LU)", aOwn - aBleed);
+        check (std::abs (bOwn + 20.0) < 2.0 && std::abs (aOwn + 20.0) < 2.0, "  own voices levelled to -20 LUFS (worst LU off)",
+               std::max (std::abs (bOwn + 20.0), std::abs (aOwn + 20.0)));
     }
 
     std::printf (failures == 0 ? "ALL OK\n" : "FAILURES: %d\n", failures);

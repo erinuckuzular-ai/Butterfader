@@ -37,11 +37,12 @@ private:
     juce::TooltipWindow tooltips { this, 600 };
 
     bf::ui::ButterLogo logo;
-    juce::ComboBox platformBox;
-    std::unique_ptr<juce::ComboBoxParameterAttachment> platformAttachment;
+    bf::ui::SegmentedControl modeControl;
+    juce::ComboBox platformBox, groupBox;
+    std::unique_ptr<juce::ComboBoxParameterAttachment> platformAttachment, groupAttachment;
     bf::ui::CompareButton compare;
 
-    bf::ui::AutoSwitch autoSwitch;
+    bf::ui::AutoSwitch autoSwitch, guardSwitch;
     bf::ui::RiderFader rider;
 
     bf::ui::HistoryView historyView;
@@ -51,9 +52,11 @@ private:
     bf::ui::LoudnessBar loudnessBar;
     bf::ui::ReductionBar reductionBar;
 
-    bf::ui::SegmentedControl character, leveling;
-    juce::Slider targetKnob, ceilingKnob;
-    std::unique_ptr<juce::SliderParameterAttachment> targetAttachment, ceilingAttachment;
+    bf::ui::SegmentedControl character, debleedControl, leveling;
+    juce::Slider targetKnob, micTargetKnob, ceilingKnob;
+    std::unique_ptr<juce::SliderParameterAttachment> targetAttachment, micTargetAttachment, ceilingAttachment;
+    void updateModeVisibility();
+    juce::String linkNote() const;
 
     // bounds of painted areas (design coordinates)
     juce::Rectangle<float> headerArea, riderPanel, centrePanel, metersPanel, controlsPanel, readoutArea, statusArea;
@@ -61,8 +64,10 @@ private:
     // latest meter values
     float shortTerm = -120.0f, momentary = -120.0f, integrated = -120.0f, truePeak = -120.0f, target = -14.0f, ceiling = -1.0f;
     float grHeld = 0.0f;
+    float duck = 0.0f;
     bool bypassed = false, autoOn = true, learning = true, riding = false, clippingNow = false, ceilingCapped = false;
-    int platform = 0;
+    bool micMode = false, talkingNow = false, duckingBleed = false;
+    int platform = 0, debleed = 0, linkedMics = 0, linkedTalking = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ButterfaderAudioProcessorEditor)
 };

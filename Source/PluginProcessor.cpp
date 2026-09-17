@@ -21,6 +21,18 @@ ButterfaderAudioProcessor::ButterfaderAudioProcessor()
     inputGainParam = apvts.getRawParameterValue ("inputGain");
     speedParam     = apvts.getRawParameterValue ("speed");
     characterParam = apvts.getRawParameterValue ("character");
+    modeParam      = apvts.getRawParameterValue ("mode");
+    micTargetParam = apvts.getRawParameterValue ("micTarget");
+    debleedParam   = apvts.getRawParameterValue ("debleed");
+    groupParam     = apvts.getRawParameterValue ("group");
+    guardParam     = apvts.getRawParameterValue ("guard");
+
+    linkSlot = bf::MicLink::acquire();
+}
+
+ButterfaderAudioProcessor::~ButterfaderAudioProcessor()
+{
+    bf::MicLink::release (linkSlot);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ButterfaderAudioProcessor::createLayout()
@@ -28,9 +40,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout ButterfaderAudioProcessor::c
     using namespace juce;
     std::vector<std::unique_ptr<RangedAudioParameter>> p;
 
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Mode", StringArray { "Mic", "Master" }, masterMode));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "platform", 1 }, "Platform", bf::platformNames(), 0));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "target", 1 }, "Custom target",
         NormalisableRange<float> (-30.0f, -6.0f, 0.5f), -14.0f,
+        AudioParameterFloatAttributes().withLabel ("LUFS").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " LUFS"; })));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "micTarget", 1 }, "Voice level",
+        NormalisableRange<float> (-30.0f, -12.0f, 0.5f), -20.0f,
         AudioParameterFloatAttributes().withLabel ("LUFS").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " LUFS"; })));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "ceiling", 1 }, "Ceiling",
         NormalisableRange<float> (-6.0f, 0.0f, 0.1f), -1.0f,
@@ -41,6 +57,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout ButterfaderAudioProcessor::c
         AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction (dbText)));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "speed", 1 }, "Leveling", StringArray { "Gentle", "Normal", "Tight" }, 1));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "character", 1 }, "Character", StringArray { "Clean", "Punchy", "Smooth" }, 0));
+    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "guard", 1 }, "Noise guard", true));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "debleed", 1 }, "Debleed", StringArray { "Off", "Gate", "Linked" }, debleedLinked));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "group", 1 }, "Link group", StringArray { "A", "B", "C", "D" }, 0));
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "bypass", 1 }, "Bypass (level matched)", false));
 
     return { p.begin(), p.end() };
@@ -48,18 +67,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout ButterfaderAudioProcessor::c
 
 float ButterfaderAudioProcessor::getTargetLufs() const
 {
+    if (isMicMode()) return micTargetParam->load();
     const int platform = juce::jlimit (0, bf::numPlatforms - 1, (int) platformParam->load());
     return platform == bf::customPlatform ? targetParam->load() : bf::platforms[platform].targetLufs;
 }
 
 float ButterfaderAudioProcessor::getCeilingDb() const
 {
+    if (isMicMode()) return juce::jmin (ceilingParam->load(), micCeilingDb);
     const int platform = juce::jlimit (0, bf::numPlatforms - 1, (int) platformParam->load());
     return juce::jmin (ceilingParam->load(), bf::platforms[platform].maxTruePeak);
 }
 
 bool ButterfaderAudioProcessor::isCeilingCappedByPlatform() const
 {
+    if (isMicMode()) return micCeilingDb < ceilingParam->load() - 0.05f;
     const int platform = juce::jlimit (0, bf::numPlatforms - 1, (int) platformParam->load());
     return bf::platforms[platform].maxTruePeak < ceilingParam->load() - 0.05f;
 }
@@ -83,7 +105,10 @@ void ButterfaderAudioProcessor::prepareToPlay (double newSampleRate, int)
     outputMeter.prepare (sampleRate, numChannels);
     rider.prepare (sampleRate);
     if (rateChanged)
+    {
         rider.resetLearning();
+        noiseFloor.reset();
+    }
 
     limiter.prepare (sampleRate, numChannels);
     outputPeak.assign ((size_t) numChannels, {});
@@ -91,6 +116,11 @@ void ButterfaderAudioProcessor::prepareToPlay (double newSampleRate, int)
 
     dryDelay.assign ((size_t) numChannels, std::vector<float> ((size_t) limiter.getLatencySamples(), 0.0f));
     dryPos = 0;
+
+    controlDt = controlInterval / sampleRate;
+    duckOpenCoef  = 1.0f - std::exp (-1.0f / (float) (sampleRate * 0.004));
+    duckCloseCoef = 1.0f - std::exp (-1.0f / (float) (sampleRate * 0.12));
+    controlCounter = 0; tickEnergy = 0.0;
 
     matchCoef = 1.0 - std::exp (-1.0 / (sampleRate * 3.0));
     bypassCoef = 1.0f - std::exp (-1.0f / (float) (sampleRate * 0.015));
@@ -116,6 +146,77 @@ void ButterfaderAudioProcessor::resetMeters()
     integratedLufs = -120.0f;
 }
 
+//==============================================================================
+// Runs every 32 samples: noise floor, who is talking, and how far to duck (bleed / noise).
+void ButterfaderAudioProcessor::updateControl (float riderGainDb, bool guardOn, int debleed, bool micModeOn,
+                                               float target, const bf::MicLink::Others& others)
+{
+    const double tick = tickEnergy / controlInterval;
+    tickEnergy = 0.0;
+
+    const double attack = 1.0 - std::exp (-controlDt / 0.005), release = 1.0 - std::exp (-controlDt / 0.08);
+    fastEnergy += (tick - fastEnergy) * (tick > fastEnergy ? attack : release);
+
+    const double smooth = 1.0 - std::exp (-controlDt / 0.2);
+    slowEnergy += (tick - slowEnergy) * smooth;
+
+    const float levelDb = (float) bf::energyToLufs (fastEnergy);           // raw input level, fast
+    const float steadyDb = (float) bf::energyToLufs (slowEnergy);          // raw input level, smoothed
+    const float floorDb = noiseFloor.update (steadyDb, rider.getSpeechLufs(), rider.hasEstimate(), controlDt);
+    const float levelledDb = levelDb + riderGainDb;                         // what it sounds like after the rider
+    const bool aboveNoise = levelDb > floorDb + 12.0f && levelDb > -65.0f;
+
+    // --- mic link: share of the room's (levelled) speech energy that is ours
+    const bool linked = micModeOn && debleed == debleedLinked && linkSlot >= 0;
+    const double myEnergy = aboveNoise ? bf::lufsToEnergy (levelledDb) : 0.0;
+    const bool haveOthers = linked && others.count > 0;
+    const double share = haveOthers ? myEnergy / std::max (1.0e-12, myEnergy + others.energy) : 1.0;
+
+    isTalking = aboveNoise && share > 0.35;
+    if (linkSlot >= 0)
+    {
+        auto& slot = bf::MicLink::slots()[(size_t) linkSlot];
+        slot.linked = linked;
+        slot.group = (int) groupParam->load();
+        slot.energy = (float) myEnergy;
+        slot.talking = isTalking;
+        slot.updatedMs = bf::MicLink::now();
+    }
+
+    // the rider only learns from real speech on this mic, never from noise or bleed
+    rider.setLearningAllowed (! guardOn || aboveNoise ? (! haveOthers || share > 0.35) : false);
+
+    // --- debleed
+    float debleedDb = 0.0f;
+    if (micModeOn && debleed == debleedLinked && haveOthers)
+        debleedDb = juce::jlimit (-debleedDepthDb, 0.0f, 10.0f * (float) std::log10 (std::max (share, 1.0e-6)));
+    else if (micModeOn && debleed != debleedOff)
+    {
+        const float threshold = target - 6.0f;   // bleed usually arrives well below the mic's own voice
+        if (levelledDb < threshold)
+            debleedDb = juce::jmax (-debleedDepthDb, (levelledDb - threshold) * 3.0f);
+    }
+
+    // --- noise guard: between phrases, never let noise come out louder than it went in
+    float guardDb = 0.0f;
+    if (guardOn)
+    {
+        const float margin = levelDb - floorDb;
+        const float depth = juce::jlimit (0.0f, 30.0f, riderGainDb) + 6.0f;
+        if (margin < 12.0f)
+            guardDb = juce::jmax (-depth, -(12.0f - margin) * 3.0f);
+    }
+
+    float wanted = juce::jmin (debleedDb, guardDb);
+
+    // short hold so word endings aren't clipped off
+    if (wanted > -1.0f) holdSeconds = 0.12;
+    else if (holdSeconds > 0.0) { holdSeconds -= controlDt; wanted = 0.0f; }
+
+    duckTargetDb = wanted;
+    duckingBleed = debleedDb < -3.0f && debleedDb <= guardDb;
+}
+
 void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -126,13 +227,19 @@ void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     if (resetRequested.exchange (false))
         resetMeters();
 
+    const bool  micModeOn = isMicMode();
     const float target  = getTargetLufs();
     const float ceiling = bf::dbToGain (getCeilingDb() - 0.1f);  // small margin for inter-sample error
     const bool  autoOn  = autoParam->load() > 0.5f;
+    const bool  guardOn = guardParam->load() > 0.5f;
+    const int   debleed = (int) debleedParam->load();
     const int   speed   = (int) speedParam->load();
     const int   character = (int) characterParam->load();
     const float bypassTarget = bypassParam->get() ? 1.0f : 0.0f;
     const float manualTarget = inputGainParam->load();
+
+    const auto others = (micModeOn && debleed == debleedLinked && linkSlot >= 0)
+                            ? bf::MicLink::others (linkSlot, (int) groupParam->load()) : bf::MicLink::Others {};
 
     if (autoOn && ! wasAuto) rider.setGainDb (manualGainDb);
     if (! autoOn && wasAuto) manualGainDb = rider.getGainDb();
@@ -172,6 +279,7 @@ void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         if (clipHoldSamples > 0) --clipHoldSamples;
 
         const double inEnergy = inputMeter.pushFrame (readFrame.data(), 0);
+        tickEnergy += inEnergy;
 
         // ---- gain ---------------------------------------------------------------------------
         float gainDb;
@@ -182,8 +290,14 @@ void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
             manualGainDb += (manualTarget - manualGainDb) * gainSmoothCoef;
             gainDb = manualGainDb;
         }
-        const float gain = bf::dbToGain (gainDb);
 
+        if (++controlCounter >= controlInterval)
+        {
+            controlCounter = 0;
+            updateControl (gainDb, guardOn, debleed, micModeOn, target, others);
+        }
+
+        const float gain = bf::dbToGain (gainDb);
         float preLimitPeak = 0.0f;
         for (int ch = 0; ch < chans; ++ch)
         {
@@ -191,8 +305,17 @@ void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
             preLimitPeak = juce::jmax (preLimitPeak, std::abs (channelData[ch][i]));
         }
 
-        // ---- limiter ------------------------------------------------------------------------
+        // ---- limiter, then debleed / noise ducking on the delayed audio (free look-ahead) ----
         const float g = limiter.processFrame (frame.data(), ceiling, character);
+
+        duckSmoothedDb += (duckTargetDb - duckSmoothedDb) * (duckTargetDb > duckSmoothedDb ? duckOpenCoef : duckCloseCoef);
+        if (duckSmoothedDb < -0.01f)
+        {
+            const float duckGain = bf::dbToGain (duckSmoothedDb);
+            for (int ch = 0; ch < chans; ++ch)
+                channelData[ch][i] *= duckGain;
+        }
+
         lastOutputEnergy = outputMeter.pushFrame (readFrame.data(), 0);
 
         float outPeak = 0.0f, tp = 0.0f;
@@ -236,6 +359,7 @@ void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         accInPeak  = juce::jmax (accInPeak, preLimitPeak);
         accOutPeak = juce::jmax (accOutPeak, outPeak);
         accGrMin   = juce::jmin (accGrMin, g);
+        accDuckMin = juce::jmin (accDuckMin, duckSmoothedDb);
 
         if (++historyCounter >= historyInterval)
         {
@@ -245,12 +369,13 @@ void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
             h.inputDb = bf::gainToDb (accInPeak);
             h.outputDb = bf::gainToDb (accOutPeak);
             h.grDb = bf::gainToDb (accGrMin);
+            h.duckDb = accDuckMin;
             h.shortTerm = (float) outputMeter.getShortTerm();
             historyWrite = w;
 
             grNowDb = h.grDb;
             grPeakDb = juce::jmin (grPeakDb.load(), h.grDb);
-            accInPeak = accOutPeak = 0.0f; accGrMin = 1.0f;
+            accInPeak = accOutPeak = 0.0f; accGrMin = 1.0f; accDuckMin = 0.0f;
         }
     }
 
@@ -267,6 +392,11 @@ void ButterfaderAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     clippingNow    = clipHoldSamples > 0;
     riderActive    = autoOn && rider.isActive();
     riderLearning  = autoOn && rider.isLearning();
+    duckDb         = duckSmoothedDb;
+    noiseFloorDb   = noiseFloor.get();
+    talking        = isTalking;
+    linkedMics     = others.count;
+    linkedTalking  = others.talking;
 }
 
 //==============================================================================

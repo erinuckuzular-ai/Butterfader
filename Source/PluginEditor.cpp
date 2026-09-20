@@ -26,7 +26,7 @@ ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAud
     platformAttachment = std::make_unique<juce::ComboBoxParameterAttachment> (*p.apvts.getParameter ("platform"), platformBox);
     platformBox.setTooltip ("Where is this going? Butterfader aims for that platform's loudness and peak rules.");
 
-    groupBox.addItemList ({ "Link group A", "Link group B", "Link group C", "Link group D" }, 1);
+    groupBox.addItemList ({ "Group A", "Group B", "Group C", "Group D" }, 1);
     groupAttachment = std::make_unique<juce::ComboBoxParameterAttachment> (*p.apvts.getParameter ("group"), groupBox);
     groupBox.setTooltip ("Mics in the same group duck each other's bleed. Use different groups for separate shows or scenes.");
 
@@ -180,11 +180,11 @@ juce::String ButterfaderAudioProcessorEditor::headerSpec() const
 
     if (debleed == ButterfaderAudioProcessor::debleedOff)  return "Debleed off";
     if (debleed == ButterfaderAudioProcessor::debleedGate) return "Gating bleed on its own";
-    if (linkedMics == 0) return "No other mics linked yet";
+    if (linkedMics == 0) return "No other mics yet";
     const juce::String others = juce::String (linkedMics) + (linkedMics == 1 ? " other mic" : " other mics");
-    if (talkingNow)        return others + dot() + "this one's talking";
-    if (linkedTalking > 0) return others + dot() + "someone else talking";
-    return "Linked with " + others;
+    if (talkingNow)        return others + dot() + "talking";
+    if (linkedTalking > 0) return others + dot() + "someone else";
+    return others + dot() + "linked";
 }
 
 juce::String ButterfaderAudioProcessorEditor::statusMessage (juce::Colour& colour) const
@@ -218,7 +218,7 @@ void ButterfaderAudioProcessorEditor::layoutContent()
     rail = advanced ? area.removeFromBottom ((float) railHeight) : juce::Rectangle<float>();
     stage.setBounds (area.toNearestInt());
 
-    modeTabs.setBounds (juce::Rectangle<float> (196.0f, 12.0f, 150.0f, 40.0f).toNearestInt());
+    modeTabs.setBounds (juce::Rectangle<float> (156.0f, 12.0f, 212.0f, 40.0f).toNearestInt());
     viewKey.setBounds (juce::Rectangle<float> (topBar.getRight() - 24.0f - 96.0f, 10.0f, 96.0f, 44.0f).toNearestInt());
     compare.setBounds (juce::Rectangle<float> ((float) viewKey.getX() - 10.0f - 160.0f, 10.0f, 160.0f, 44.0f).toNearestInt());
     layoutHeader();
@@ -246,13 +246,18 @@ void ButterfaderAudioProcessorEditor::layoutContent()
 // The destination (or link group) reads as a title followed by its spec, right-aligned against A/B.
 void ButterfaderAudioProcessorEditor::layoutHeader()
 {
-    const auto specFont = font (13.5f);
-    const float specW = specFont.getStringWidthFloat (lastSpec.isEmpty() ? headerSpec() : lastSpec) + 4.0f;
     const float right = (float) compare.getX() - 24.0f;
-    specArea = { right - specW, 12.0f, specW, 40.0f };
+    const float left = (float) modeTabs.getRight() + 16.0f;
 
     auto& box = micMode ? groupBox : platformBox;
     const float boxW = font (17.0f, "Semibold").getStringWidthFloat (box.getText()) + 30.0f;
+
+    // The menu keeps its width; the spec line takes whatever is left and is squeezed if it has to be,
+    // so a long link-group line never runs under the A/B key.
+    const float wanted = font (13.5f).getStringWidthFloat (lastSpec.isEmpty() ? headerSpec() : lastSpec) + 4.0f;
+    const float specW = juce::jlimit (0.0f, juce::jmax (0.0f, right - left - boxW - 12.0f), wanted);
+    specArea = { right - specW, 12.0f, specW, 40.0f };
+
     const auto boxBounds = juce::Rectangle<float> (specArea.getX() - 12.0f - boxW, 12.0f, boxW, 40.0f).toNearestInt();
     platformBox.setBounds (boxBounds);
     groupBox.setBounds (boxBounds);
@@ -283,7 +288,7 @@ void ButterfaderAudioProcessorEditor::paintContent (juce::Graphics& g)
 
     g.setFont (font (13.5f));
     g.setColour (colours::textDim);
-    g.drawText (lastSpec, specArea, juce::Justification::centredLeft);
+    g.drawFittedText (lastSpec, specArea.toNearestInt(), juce::Justification::centredLeft, 1, 0.9f);
 
     if (! advanced)
         return;

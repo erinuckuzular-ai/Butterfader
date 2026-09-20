@@ -17,12 +17,12 @@ public:
         attachment.sendInitialUpdate();
         setRepaintsOnMouseActivity (true);
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
-        setTooltip ("Mic: put one on each voice. Master: put one on the Mix track.");
+        setTooltip ("One voice: put one on each voice track. Whole mix: put one on the Mix track.");
     }
 
     void paint (juce::Graphics& g) override
     {
-        const juce::StringArray names { "Mic", "Master" };
+        const juce::StringArray names { "One voice", "Whole mix" };
         auto r = getLocalBounds().toFloat();
         const float w = r.getWidth() / 2.0f;
         for (int i = 0; i < 2; ++i)

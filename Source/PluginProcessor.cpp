@@ -40,7 +40,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ButterfaderAudioProcessor::c
     using namespace juce;
     std::vector<std::unique_ptr<RangedAudioParameter>> p;
 
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Mode", StringArray { "Mic", "Master" }, masterMode));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Mode", StringArray { "One voice", "Whole mix" }, masterMode));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "platform", 1 }, "Platform", bf::platformNames(), 0));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "target", 1 }, "Custom target",
         NormalisableRange<float> (-30.0f, -6.0f, 0.5f), -14.0f,

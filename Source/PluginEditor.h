@@ -6,7 +6,9 @@
 class ButterfaderAudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
-    static constexpr int designWidth = 940, designHeight = 620;
+    // The simple face is the same width with the control rail taken off the bottom.
+    static constexpr int designWidth = 940, designHeight = 620, railHeight = 214;
+    static constexpr int simpleHeight = designHeight - railHeight;
 
     explicit ButterfaderAudioProcessorEditor (ButterfaderAudioProcessor&);
     ~ButterfaderAudioProcessorEditor() override;
@@ -31,6 +33,8 @@ private:
     void layoutContent();
     void layoutHeader();
     void updateModeVisibility();
+    void setAdvanced (bool, bool resizeWindow = true);
+    int designHeightNow() const { return advanced ? designHeight : simpleHeight; }
     juce::String statusMessage (juce::Colour& colour) const;
     juce::String headerSpec() const;
 
@@ -43,6 +47,7 @@ private:
     juce::ComboBox platformBox, groupBox;
     std::unique_ptr<juce::ComboBoxParameterAttachment> platformAttachment, groupAttachment;
     bf::ui::CompareKey compare;
+    bf::ui::ViewKey viewKey;
 
     bf::ui::StageView stage;
 
@@ -59,6 +64,7 @@ private:
     float shortTerm = -120.0f, integrated = -120.0f, target = -14.0f, ceiling = -1.0f, grHeld = 0.0f, duck = 0.0f;
     bool bypassed = false, autoOn = true, learning = true, clippingNow = false, ceilingCapped = false;
     bool micMode = false, talkingNow = false, duckingBleed = false;
+    bool advanced = false;
     int platform = -1, debleed = -1, linkedMics = 0, linkedTalking = 0;
     juce::String lastSpec;
 

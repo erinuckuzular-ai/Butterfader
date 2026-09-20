@@ -283,6 +283,43 @@ private:
 };
 
 //==============================================================================
+// Switches between the simple face and the full set of controls.
+class ViewKey : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    std::function<void()> onClick;
+
+    void setAdvanced (bool a) { if (a != advanced) { advanced = a; updateTooltip(); repaint(); } }
+
+    ViewKey() 
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setRepaintsOnMouseActivity (true);
+        updateTooltip();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (2.0f, 4.0f);
+        drawRaised (g, r, 8.0f, colours::key, isMouseOver());
+        g.setColour (colours::textDim);
+        g.setFont (font (13.5f, "Semibold"));
+        g.drawText (advanced ? "Simple" : "Advanced", r, juce::Justification::centred);
+    }
+
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+
+private:
+    void updateTooltip()
+    {
+        setTooltip (advanced ? "Hide the extra controls and go back to the simple face."
+                             : "Show the extra controls: character, leveling speed, target and ceiling.");
+    }
+
+    bool advanced = false;
+};
+
+//==============================================================================
 class ClipBadge : public juce::Component, public juce::SettableTooltipClient
 {
 public:

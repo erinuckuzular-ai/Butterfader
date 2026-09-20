@@ -17,7 +17,7 @@ ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAud
     setLookAndFeel (&lookAndFeel);
     addAndMakeVisible (content);
 
-    for (auto* c : std::initializer_list<juce::Component*> { &modeTabs, &platformBox, &groupBox, &compare, &stage, &rider,
+    for (auto* c : std::initializer_list<juce::Component*> { &modeTabs, &platformBox, &groupBox, &compare, &viewKey, &stage, &rider,
                                                              &autoToggle, &guardToggle, &character, &debleedSelector, &leveling,
                                                              &targetKnob, &micTargetKnob, &ceilingKnob })
         content.addAndMakeVisible (c);
@@ -52,11 +52,12 @@ ButterfaderAudioProcessorEditor::ButterfaderAudioProcessorEditor (ButterfaderAud
     micTargetKnob.setDoubleClickReturnValue (true, -20.0f);
     ceilingKnob.setDoubleClickReturnValue (true, -1.0f);
 
-    auto* constrainer = getConstrainer();
-    constrainer->setFixedAspectRatio ((double) designWidth / designHeight);
-    constrainer->setSizeLimits (designWidth * 6 / 10, designHeight * 6 / 10, designWidth * 2, designHeight * 2);
+    viewKey.onClick = [this] { setAdvanced (! advanced); };
+
     setResizable (true, true);
-    setSize (designWidth, designHeight);
+    // New users get the simple face; the choice is remembered with the session.
+    setAdvanced ((bool) processor.apvts.state.getProperty ("advanced", false), false);
+    setSize (designWidth, designHeightNow());
 
     timerCallback();
     startTimerHz (30);
@@ -69,8 +70,36 @@ ButterfaderAudioProcessorEditor::~ButterfaderAudioProcessorEditor()
 
 void ButterfaderAudioProcessorEditor::resized()
 {
-    content.setBounds (0, 0, designWidth, designHeight);
-    content.setTransform (juce::AffineTransform::scale ((float) getWidth() / designWidth, (float) getHeight() / designHeight));
+    const int h = designHeightNow();
+    content.setBounds (0, 0, designWidth, h);
+    content.setTransform (juce::AffineTransform::scale ((float) getWidth() / designWidth, (float) getHeight() / h));
+}
+
+// The simple face shows the destination, the meters and the plain-language status line; everything
+// that needs an audio vocabulary lives behind Advanced and keeps working at its default in the meantime.
+void ButterfaderAudioProcessorEditor::setAdvanced (bool shouldBeAdvanced, bool resizeWindow)
+{
+    advanced = shouldBeAdvanced;
+    processor.apvts.state.setProperty ("advanced", advanced, nullptr);
+    viewKey.setAdvanced (advanced);
+
+    for (auto* c : std::initializer_list<juce::Component*> { &rider, &autoToggle, &guardToggle, &character,
+                                                             &debleedSelector, &leveling, &targetKnob,
+                                                             &micTargetKnob, &ceilingKnob })
+        c->setVisible (advanced);
+    if (advanced)
+        updateModeVisibility();
+
+    const int h = designHeightNow();
+    auto* constrainer = getConstrainer();
+    constrainer->setFixedAspectRatio ((double) designWidth / h);
+    constrainer->setSizeLimits (designWidth * 6 / 10, h * 6 / 10, designWidth * 2, h * 2);
+
+    if (resizeWindow)
+        setSize (getWidth(), juce::roundToInt ((float) getWidth() * (float) h / (float) designWidth));
+
+    lastSpec = {};
+    content.repaint();
 }
 
 //==============================================================================
@@ -135,10 +164,10 @@ void ButterfaderAudioProcessorEditor::updateModeVisibility()
 {
     platformBox.setVisible (! micMode);
     groupBox.setVisible (micMode && debleed == ButterfaderAudioProcessor::debleedLinked);
-    character.setVisible (! micMode);
-    debleedSelector.setVisible (micMode);
-    targetKnob.setVisible (! micMode);
-    micTargetKnob.setVisible (micMode);
+    character.setVisible (advanced && ! micMode);
+    debleedSelector.setVisible (advanced && micMode);
+    targetKnob.setVisible (advanced && ! micMode);
+    micTargetKnob.setVisible (advanced && micMode);
     lastSpec = {};
     content.repaint();
 }
@@ -184,14 +213,18 @@ juce::String ButterfaderAudioProcessorEditor::statusMessage (juce::Colour& colou
 //==============================================================================
 void ButterfaderAudioProcessorEditor::layoutContent()
 {
-    auto area = juce::Rectangle<float> (0, 0, (float) designWidth, (float) designHeight);
+    auto area = juce::Rectangle<float> (0, 0, (float) designWidth, (float) designHeightNow());
     topBar = area.removeFromTop (64.0f);
-    rail = area.removeFromBottom (214.0f);
+    rail = advanced ? area.removeFromBottom ((float) railHeight) : juce::Rectangle<float>();
     stage.setBounds (area.toNearestInt());
 
     modeTabs.setBounds (juce::Rectangle<float> (196.0f, 12.0f, 150.0f, 40.0f).toNearestInt());
-    compare.setBounds (juce::Rectangle<float> (topBar.getRight() - 24.0f - 160.0f, 10.0f, 160.0f, 44.0f).toNearestInt());
+    viewKey.setBounds (juce::Rectangle<float> (topBar.getRight() - 24.0f - 96.0f, 10.0f, 96.0f, 44.0f).toNearestInt());
+    compare.setBounds (juce::Rectangle<float> ((float) viewKey.getX() - 10.0f - 160.0f, 10.0f, 160.0f, 44.0f).toNearestInt());
     layoutHeader();
+
+    if (! advanced)
+        return;
 
     const float top = rail.getY() + 24.0f;
     rider.setBounds (juce::Rectangle<float> (28.0f, top, 276.0f, 106.0f).toNearestInt());
@@ -251,6 +284,9 @@ void ButterfaderAudioProcessorEditor::paintContent (juce::Graphics& g)
     g.setFont (font (13.5f));
     g.setColour (colours::textDim);
     g.drawText (lastSpec, specArea, juce::Justification::centredLeft);
+
+    if (! advanced)
+        return;
 
     // rail: a faceplate lit from above, with engraved dividers between sections
     g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1c1a14), 0.0f, rail.getY(), juce::Colour (0xff100f0b), 0.0f, rail.getBottom(), false));

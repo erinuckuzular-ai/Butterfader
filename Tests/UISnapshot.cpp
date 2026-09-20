@@ -7,7 +7,8 @@ int main (int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI gui;
     const juce::File outDir (argc > 1 ? juce::String (argv[1]) : juce::File::getCurrentWorkingDirectory().getFullPathName());
 
-    auto render = [&] (const juce::String& name, float sourceLufs, float driveDb, bool bypass, bool manual, int platform, float scale)
+    auto render = [&] (const juce::String& name, float sourceLufs, float driveDb, bool bypass, bool manual, int platform, float scale,
+                       bool advancedView = false)
     {
         auto processor = std::unique_ptr<ButterfaderAudioProcessor> (dynamic_cast<ButterfaderAudioProcessor*> (createPluginFilter()));
         auto set = [&] (const char* id, float v) { auto* p = processor->apvts.getParameter (id); p->setValueNotifyingHost (p->convertTo0to1 (v)); };
@@ -38,8 +39,10 @@ int main (int argc, char** argv)
         }
         set ("bypass", bypass ? 1.0f : 0.0f);
 
+        processor->apvts.state.setProperty ("advanced", advancedView, nullptr);
         std::unique_ptr<juce::AudioProcessorEditor> editor (processor->createEditor());
-        editor->setSize ((int) (940 * scale), (int) (620 * scale));
+        // The editor opens at the size of whichever face it shows, so scale that rather than a fixed height.
+        editor->setSize ((int) (editor->getWidth() * scale), (int) (editor->getHeight() * scale));
         for (int i = 0; i < 20; ++i)
             juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
 
@@ -52,8 +55,9 @@ int main (int argc, char** argv)
     };
 
     render ("ui_quiet_spotify.png", -34.0f, 0.0f, false, false, 0, 1.0f);
-    render ("ui_clipped_podcast.png", -20.0f, 14.0f, false, false, 8, 1.0f);
-    render ("ui_manual_bypass.png", -30.0f, 0.0f, true, true, 12, 0.8f);
+    render ("ui_advanced_spotify.png", -34.0f, 0.0f, false, false, 0, 1.0f, true);
+    render ("ui_clipped_podcast.png", -20.0f, 14.0f, false, false, 8, 1.0f, true);
+    render ("ui_manual_bypass.png", -30.0f, 0.0f, true, true, 12, 0.8f, true);
 
     // Mic mode: two linked lapels bleeding into each other; snapshot mic B while A is talking.
     {
@@ -89,8 +93,8 @@ int main (int argc, char** argv)
             a->processBlock (ba, midi);
             b->processBlock (bb, midi);
         }
+        b->apvts.state.setProperty ("advanced", true, nullptr);
         std::unique_ptr<juce::AudioProcessorEditor> editor (b->createEditor());
-        editor->setSize (940, 620);
         for (int i = 0; i < 20; ++i)
             juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
         auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 2.0f);
